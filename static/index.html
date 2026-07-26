@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AudioBookTTS</title>
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #fff; --fg: #1a1a1c; --muted: #6b6b73;
+    --border: #e3e3e8; --accent: #4f46e5; --accent-fg: #fff;
+    --ok: #0f7b45; --err: #b3261e; --radius: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17171a; --panel: #1f1f24; --fg: #ececf1; --muted: #9a9aa5;
+      --border: #32323a; --accent: #7c74f0; --ok: #4ade80; --err: #ff6b6b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1rem 4rem; background: var(--bg); color: var(--fg);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  }
+  main { max-width: 820px; margin: 0 auto; }
+  h1 { font-size: 1.5rem; margin: 0 0 .25rem; letter-spacing: -.02em; }
+  .sub { color: var(--muted); margin: 0 0 1.75rem; font-size: .9rem; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 1.25rem; margin-bottom: 1.25rem;
+  }
+  .panel h2 {
+    font-size: .78rem; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); margin: 0 0 .9rem; font-weight: 600;
+  }
+  #drop {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 2.25rem 1rem; text-align: center; cursor: pointer;
+    transition: border-color .15s, background .15s;
+  }
+  #drop:hover, #drop.over { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+  #drop p { margin: .3rem 0; }
+  #drop .hint { color: var(--muted); font-size: .85rem; }
+  .book { display: flex; gap: 1.1rem; align-items: flex-start; }
+  .book img {
+    width: 92px; border-radius: 6px; border: 1px solid var(--border); flex-shrink: 0;
+  }
+  .book .meta strong { display: block; font-size: 1.05rem; }
+  .book .meta .by { color: var(--muted); }
+  .book .meta .stats { color: var(--muted); font-size: .85rem; margin-top: .4rem; }
+  .row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .85rem; }
+  label.fl { font-size: .85rem; color: var(--muted); min-width: 68px; }
+  select, input[type=text] {
+    background: var(--bg); color: var(--fg); border: 1px solid var(--border);
+    border-radius: 7px; padding: .5rem .6rem; font: inherit; font-size: .9rem;
+    flex: 1; min-width: 140px;
+  }
+  input[type=range] { flex: 1; accent-color: var(--accent); }
+  button {
+    background: var(--accent); color: var(--accent-fg); border: 0;
+    border-radius: 7px; padding: .55rem 1rem; font: inherit; font-weight: 500;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { filter: brightness(1.08); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  button.big { width: 100%; padding: .7rem; font-size: 1rem; margin-top: .3rem; }
+  .chaps { max-height: 190px; overflow-y: auto; border: 1px solid var(--border); border-radius: 7px; }
+  .chaps div {
+    display: flex; justify-content: space-between; gap: 1rem;
+    padding: .4rem .65rem; font-size: .85rem; border-bottom: 1px solid var(--border);
+  }
+  .chaps div:last-child { border-bottom: 0; }
+  .chaps span.n { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .bar { height: 8px; background: var(--border); border-radius: 99px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .25s; }
+  .pstat { display: flex; justify-content: space-between; font-size: .87rem; margin-bottom: .5rem; gap: 1rem; }
+  .pstat .stage { font-weight: 500; }
+  .pstat .pct { color: var(--muted); font-variant-numeric: tabular-nums; }
+  .hidden { display: none !important; }
+  .ok { color: var(--ok); } .err { color: var(--err); }
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th { text-align: left; color: var(--muted); font-weight: 500; padding: .3rem .5rem; }
+  td { padding: .4rem .5rem; border-top: 1px solid var(--border); }
+  a { color: var(--accent); }
+  .toggle { display: flex; align-items: center; gap: .5rem; font-size: .88rem; }
+  #sampleText { color: var(--muted); font-size: .82rem; font-style: italic; margin-top: .5rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>AudioBookTTS</h1>
+  <p class="sub">Turn an epub into a chaptered audiobook with open-source TTS, running locally.</p>
+
+  <div class="panel">
+    <h2>1 · Choose a book</h2>
+    <div id="drop">
+      <p><strong>Drop an .epub here</strong></p>
+      <p class="hint">or click to browse</p>
+      <input type="file" id="file" accept=".epub" class="hidden">
+    </div>
+    <div id="bookInfo" class="hidden" style="margin-top:1.1rem">
+      <div class="book">
+        <img id="cover" class="hidden" alt="Cover">
+        <div class="meta">
+          <strong id="bTitle"></strong>
+          <span class="by" id="bAuthor"></span>
+          <div class="stats" id="bStats"></div>
+        </div>
+      </div>
+      <div class="chaps" id="chapList" style="margin-top:.9rem"></div>
+    </div>
+  </div>
+
+  <div class="panel hidden" id="optPanel">
+    <h2>2 · Narration</h2>
+    <div class="row">
+      <label class="fl" for="voice">Voice</label>
+      <select id="voice"></select>
+      <button class="ghost" id="previewBtn">▶ Preview</button>
+    </div>
+    <div id="sampleText"></div>
+    <div class="row" style="margin-top:.85rem">
+      <label class="fl" for="speed">Speed</label>
+      <input type="range" id="speed" min="0.7" max="1.4" step="0.05" value="1">
+      <span id="speedVal" style="font-variant-numeric:tabular-nums;min-width:2.6rem">1.00×</span>
+    </div>
+    <div class="row">
+      <label class="fl" for="outDir">Save to</label>
+      <input type="text" id="outDir" placeholder="~/Audiobooks">
+    </div>
+    <div class="row">
+      <label class="toggle"><input type="checkbox" id="llm"> LLM text cleanup <span style="color:var(--muted)">(slower; needs a provider configured)</span></label>
+    </div>
+    <button class="big" id="startBtn">Create audiobook</button>
+  </div>
+
+  <div class="panel hidden" id="progPanel">
+    <h2>3 · Progress</h2>
+    <div class="pstat">
+      <span class="stage" id="pStage">Starting…</span>
+      <span class="pct" id="pPct"></span>
+    </div>
+    <div class="bar"><i id="pBar"></i></div>
+    <div class="pstat" style="margin-top:.6rem">
+      <span id="pChapter" style="color:var(--muted)"></span>
+      <button class="ghost" id="cancelBtn" style="padding:.3rem .7rem;font-size:.82rem">Cancel</button>
+    </div>
+    <div id="pResult" style="margin-top:.9rem"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Jobs</h2>
+    <table>
+      <thead><tr><th>Book</th><th>Voice</th><th>Status</th><th>Chapters</th><th></th></tr></thead>
+      <tbody id="jobRows"></tbody>
+    </table>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let book = null, currentJob = null, es = null;
+
+// ---- upload -------------------------------------------------------------
+const drop = $("drop"), fileInput = $("file");
+drop.onclick = () => fileInput.click();
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("over"); };
+drop.ondragleave = () => drop.classList.remove("over");
+drop.ondrop = e => {
+  e.preventDefault(); drop.classList.remove("over");
+  if (e.dataTransfer.files[0]) upload(e.dataTransfer.files[0]);
+};
+fileInput.onchange = () => fileInput.files[0] && upload(fileInput.files[0]);
+
+async function upload(f) {
+  drop.querySelector("strong").textContent = "Parsing " + f.name + "…";
+  const fd = new FormData();
+  fd.append("file", f);
+  const r = await fetch("/api/upload", { method: "POST", body: fd });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({ detail: "Upload failed" }));
+    drop.querySelector("strong").innerHTML = '<span class="err">' + e.detail + "</span>";
+    return;
+  }
+  book = await r.json();
+  drop.querySelector("strong").textContent = "Drop an .epub here";
+  renderBook();
+}
+
+function renderBook() {
+  $("bTitle").textContent = book.title;
+  $("bAuthor").textContent = "by " + book.author;
+  const words = Math.round(book.total_chars / 5.6);
+  const mins = Math.round(words / 155);
+  $("bStats").textContent =
+    `${book.chapters.length} chapters · ${book.total_chars.toLocaleString()} characters · ` +
+    `roughly ${Math.floor(mins/60)}h ${mins%60}m of audio`;
+  if (book.has_cover) {
+    $("cover").src = "/api/cover?path=" + encodeURIComponent(book.path);
+    $("cover").classList.remove("hidden");
+  } else $("cover").classList.add("hidden");
+  $("chapList").innerHTML = book.chapters.map(c =>
+    `<div><span>${escapeHtml(c.title)}</span><span class="n">${c.chars.toLocaleString()}</span></div>`
+  ).join("");
+  $("bookInfo").classList.remove("hidden");
+  $("optPanel").classList.remove("hidden");
+}
+
+const escapeHtml = s => s.replace(/[&<>"']/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// ---- options ------------------------------------------------------------
+$("speed").oninput = e => $("speedVal").textContent = (+e.target.value).toFixed(2) + "×";
+
+(async () => {
+  const [v, c] = await Promise.all([
+    fetch("/api/voices").then(r => r.json()),
+    fetch("/api/config").then(r => r.json()),
+  ]);
+  $("voice").innerHTML = v.voices.map(x =>
+    `<option value="${x.id}">${escapeHtml(x.label)}</option>`).join("");
+  $("voice").value = c.voice;
+  $("speed").value = c.speed;
+  $("speedVal").textContent = (+c.speed).toFixed(2) + "×";
+  $("outDir").value = c.output_dir;
+  refreshJobs();
+})();
+
+$("previewBtn").onclick = async () => {
+  if (!book) return;
+  const btn = $("previewBtn");
+  btn.disabled = true; btn.textContent = "Synthesizing…";
+  try {
+    const url = `/api/preview?path=${encodeURIComponent(book.path)}` +
+      `&voice=${$("voice").value}&speed=${$("speed").value}`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("preview failed");
+    $("sampleText").textContent = "“" + (r.headers.get("X-Sample-Text") || "") + "…”";
+    const blob = await r.blob();
+    new Audio(URL.createObjectURL(blob)).play();
+  } catch (e) {
+    $("sampleText").innerHTML = '<span class="err">Preview failed.</span>';
+  } finally { btn.disabled = false; btn.textContent = "▶ Preview"; }
+};
+
+// ---- run ----------------------------------------------------------------
+$("startBtn").onclick = async () => {
+  if (!book) return;
+  $("startBtn").disabled = true;
+  const r = await fetch("/api/jobs", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      path: book.path, voice: $("voice").value, speed: +$("speed").value,
+      output_dir: $("outDir").value || null, llm_cleanup: $("llm").checked,
+    }),
+  });
+  if (!r.ok) { $("startBtn").disabled = false; return; }
+  const { job_id } = await r.json();
+  currentJob = job_id;
+  $("progPanel").classList.remove("hidden");
+  $("pResult").innerHTML = "";
+  $("cancelBtn").classList.remove("hidden");
+  listen(job_id);
+};
+
+function listen(jobId) {
+  if (es) es.close();
+  es = new EventSource(`/api/jobs/${jobId}/events`);
+  es.onmessage = ev => {
+    const p = JSON.parse(ev.data);
+    if (p.stage === "synthesizing") {
+      const chapFrac = p.n_chunks ? p.chunk_index / p.n_chunks : 0;
+      const overall = ((p.chapter_index + chapFrac) / Math.max(p.n_chapters, 1)) * 100;
+      $("pStage").textContent = "Narrating";
+      $("pPct").textContent = overall.toFixed(1) + "%";
+      $("pBar").style.width = overall + "%";
+      $("pChapter").textContent =
+        `Chapter ${p.chapter_index + 1} of ${p.n_chapters} — ${p.chapter_title} ` +
+        `(chunk ${p.chunk_index}/${p.n_chunks})`;
+    } else if (p.stage === "parsing") {
+      $("pStage").textContent = "Reading epub";
+    } else if (p.stage === "packaging") {
+      $("pStage").textContent = "Packaging m4b";
+      $("pPct").textContent = "99%"; $("pBar").style.width = "99%";
+      $("pChapter").textContent = "Adding chapters, cover art and tags";
+    } else if (p.stage === "done") {
+      $("pStage").innerHTML = '<span class="ok">Finished</span>';
+      $("pPct").textContent = "100%"; $("pBar").style.width = "100%";
+      $("pChapter").textContent = "";
+      $("cancelBtn").classList.add("hidden");
+      $("pResult").innerHTML =
+        `<a href="/api/jobs/${jobId}/download">⬇ Download audiobook</a>` +
+        `<div style="color:var(--muted);font-size:.83rem;margin-top:.3rem">${escapeHtml(p.message || "")}</div>`;
+      finish();
+    } else if (p.stage === "failed" || p.stage === "cancelled") {
+      $("pStage").innerHTML = `<span class="err">${p.stage === "failed" ? "Failed" : "Cancelled"}</span>`;
+      $("pChapter").textContent = "";
+      $("cancelBtn").classList.add("hidden");
+      if (p.message) $("pResult").innerHTML = `<span class="err">${escapeHtml(p.message)}</span>`;
+      finish();
+    }
+  };
+  es.onerror = () => { es.close(); };
+}
+
+function finish() {
+  if (es) es.close();
+  $("startBtn").disabled = false;
+  refreshJobs();
+}
+
+$("cancelBtn").onclick = async () => {
+  if (currentJob) await fetch(`/api/jobs/${currentJob}/cancel`, { method: "POST" });
+};
+
+// ---- jobs list ----------------------------------------------------------
+async function refreshJobs() {
+  const { jobs } = await fetch("/api/jobs").then(r => r.json());
+  $("jobRows").innerHTML = jobs.length ? jobs.map(j => {
+    let action = "";
+    if (j.status === "done") action = `<a href="/api/jobs/${j.job_id}/download">Download</a>`;
+    else if (["cancelled", "failed"].includes(j.status))
+      action = `<button class="ghost" style="padding:.2rem .6rem;font-size:.8rem" onclick="resumeJob('${j.job_id}')">Resume</button>`;
+    return `<tr><td>${escapeHtml(j.title)}</td><td>${escapeHtml(j.voice)}</td>` +
+      `<td>${j.status}</td><td>${j.done}/${j.total}</td><td>${action}</td></tr>`;
+  }).join("") : `<tr><td colspan="5" style="color:var(--muted)">No jobs yet.</td></tr>`;
+}
+
+async function resumeJob(id) {
+  await fetch(`/api/jobs/${id}/resume`, { method: "POST" });
+  currentJob = id;
+  $("progPanel").classList.remove("hidden");
+  $("pResult").innerHTML = ""; $("cancelBtn").classList.remove("hidden");
+  listen(id);
+}
+</script>
+</body>
+</html>

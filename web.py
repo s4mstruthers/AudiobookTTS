@@ -9,6 +9,7 @@ import queue
 import shutil
 import threading
 from pathlib import Path
+from urllib.parse import quote
 
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, UploadFile
@@ -23,9 +24,15 @@ from fastapi.staticfiles import StaticFiles
 from audiobooktts.config import APP_DIR, Config
 from audiobooktts.engines import get_engine
 from audiobooktts.epub import parse_epub
-from audiobooktts.pipeline import CancelledError, create_job, run_job
+from audiobooktts.mastering import apply_filters, filter_chain
+from audiobooktts.pipeline import (
+    CancelledError,
+    create_job,
+    render_chunks,
+    run_job,
+)
 from audiobooktts.store import JobStore
-from audiobooktts.textproc import chunk_text, clean_text
+from audiobooktts.textproc import clean_text, preview_chunks, preview_sample
 
 STATIC_DIR = Path(__file__).parent / "static"
 UPLOAD_DIR = APP_DIR / "uploads"
@@ -36,6 +43,11 @@ store = JobStore()
 # job_id -> live run state
 _runners: dict[str, dict] = {}
 _lock = threading.Lock()
+
+# Runs live in this process's memory, so anything still marked "running" at
+# startup died with a previous server. Flip it to interrupted so it becomes
+# resumable instead of being stuck with no available action.
+store.reconcile_running()
 
 
 @app.get("/")
@@ -54,11 +66,36 @@ def get_config():
     cfg = Config.load()
     return {
         "engine": cfg.engine,
-        "voice": cfg.voice,
+        "voice": cfg.voice_for(),
         "speed": cfg.speed,
         "bitrate": cfg.bitrate,
         "output_dir": cfg.output_dir,
-        "llm_provider": cfg.llm.provider,
+    }
+
+
+@app.get("/api/browse")
+def browse(path: str = ""):
+    """List sub-directories so the UI can offer a folder picker.
+
+    The browser's own directory picker yields an opaque handle, not a path the
+    server can write to, so the listing has to come from this side.
+    """
+    base = Path(path).expanduser() if path else Path.home()
+    try:
+        base = base.resolve()
+        if not base.is_dir():
+            base = Path.home().resolve()
+        dirs = sorted(
+            (p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+            key=lambda p: p.name.lower(),
+        )
+    except PermissionError:
+        raise HTTPException(403, f"Permission denied: {base}")
+    return {
+        "path": str(base),
+        "parent": str(base.parent) if base.parent != base else None,
+        "dirs": [{"name": p.name, "path": str(p)} for p in dirs],
+        "home": str(Path.home()),
     }
 
 
@@ -105,18 +142,31 @@ def preview(path: str, voice: str, engine: str = "kokoro", speed: float = 1.0,
     if not book.chapters:
         raise HTTPException(400, "No chapters")
     ch = book.chapters[min(chapter, len(book.chapters) - 1)]
-    chunks = chunk_text(clean_text(ch.text))
-    sample = " ".join(chunks[:2])[:500]
+    cfg = Config.load()
+    text = clean_text(ch.text)
+    sample = preview_sample(text)
+    # Render through the same path as the real thing, so the pacing, pauses and
+    # loudness you audition are the ones you get.
+    chunks = preview_chunks(text) or [(sample, True)]
+
     e = get_engine(engine)
-    audio = e.synthesize(sample, voice, speed)
+    audio = render_chunks(e, chunks, voice, speed, config=cfg)
+    if getattr(cfg, "master_audio", True) and audio.size:
+        audio = apply_filters(audio, e.sample_rate, filter_chain())
     buf = io.BytesIO()
     sf.write(buf, audio, e.sample_rate, format="WAV")
     buf.seek(0)
-    return Response(buf.read(), media_type="audio/wav",
-                    headers={"X-Sample-Text": sample[:200]})
+    # Percent-encode: real book text carries newlines and non-Latin-1 characters,
+    # which are illegal in an HTTP header and abort the response. The client
+    # decodes with decodeURIComponent.
+    return Response(
+        buf.read(),
+        media_type="audio/wav",
+        headers={"X-Sample-Text": quote(sample[:600], safe="")},
+    )
 
 
-def _start_runner(job_id: str, cfg: Config, llm_cleanup: bool):
+def _start_runner(job_id: str, cfg: Config):
     q: queue.Queue = queue.Queue()
     cancel = threading.Event()
 
@@ -133,8 +183,7 @@ def _start_runner(job_id: str, cfg: Config, llm_cleanup: bool):
 
     def work():
         try:
-            run_job(job_id, cfg, store, on_progress, cancel_event=cancel,
-                    llm_cleanup=llm_cleanup)
+            run_job(job_id, cfg, store, on_progress, cancel_event=cancel)
         except CancelledError:
             q.put({"stage": "cancelled", "message": "Cancelled"})
         except Exception as e:
@@ -154,15 +203,18 @@ def start_job(payload: dict):
     if not path or not Path(path).exists():
         raise HTTPException(400, "Missing or unknown epub path")
     cfg = Config.load()
-    cfg.engine = payload.get("engine", cfg.engine)
-    cfg.voice = payload.get("voice", cfg.voice)
+    cfg.remember_voice(
+        payload.get("engine", cfg.engine), payload.get("voice", cfg.voice)
+    )
     cfg.speed = float(payload.get("speed", cfg.speed))
     if payload.get("output_dir"):
         cfg.output_dir = payload["output_dir"]
-    llm_cleanup = bool(payload.get("llm_cleanup"))
+    cfg.save()  # the settings you just used become the defaults next time
 
-    manifest = create_job(path, cfg, store)
-    _start_runner(manifest.job_id, cfg, llm_cleanup)
+    raw = payload.get("chapter_voices") or {}
+    chapter_voices = {int(k): v for k, v in raw.items() if v}
+    manifest = create_job(path, cfg, store, chapter_voices=chapter_voices)
+    _start_runner(manifest.job_id, cfg)
     return {"job_id": manifest.job_id, "n_chapters": len(manifest.chapters)}
 
 
@@ -171,7 +223,7 @@ def resume_job(job_id: str):
     manifest = store.load(job_id)
     cfg = Config.load()
     cfg.engine, cfg.voice, cfg.speed = manifest.engine, manifest.voice, manifest.speed
-    _start_runner(job_id, cfg, False)
+    _start_runner(job_id, cfg)
     return {"job_id": job_id, "resumed": True}
 
 
@@ -187,6 +239,8 @@ def cancel_job(job_id: str):
 
 @app.get("/api/jobs")
 def list_jobs():
+    with _lock:
+        live_ids = set(_runners)
     out = []
     for m in store.list_jobs():
         out.append({
@@ -199,8 +253,19 @@ def list_jobs():
             "total": len(m.chapters),
             "output_path": m.output_path,
             "error": m.error,
+            # Only a job running in *this* process can be cancelled or watched.
+            "live": m.job_id in live_ids,
         })
     return {"jobs": out}
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str):
+    with _lock:
+        if job_id in _runners:
+            raise HTTPException(409, "Cancel the job before deleting it")
+    store.delete(job_id)
+    return {"deleted": job_id}
 
 
 @app.get("/api/jobs/{job_id}/events")

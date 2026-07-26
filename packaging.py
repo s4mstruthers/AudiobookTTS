@@ -44,6 +44,7 @@ def package_m4b(
     store: JobStore,
     out_dir: Path,
     bitrate: str = "80k",
+    master: bool = True,
 ) -> Path:
     job_id = manifest.job_id
     flacs = [store.chapter_audio_path(job_id, ch.index) for ch in manifest.chapters]
@@ -83,6 +84,14 @@ def package_m4b(
                 "-map", "2:v", "-c:v", "mjpeg" if cover_file.suffix == ".jpg" else "png",
                 "-disposition:v", "attached_pic",
             ]
+        if master:
+            # Two-pass: measure the assembled book, then correct it. Raw TTS
+            # lands near -26 dB RMS with peaks around -2 dB; ACX wants -23..-18
+            # dB RMS and peaks under -3 dB.
+            from audiobooktts.mastering import filter_chain, measure
+
+            measured = measure(concat_file, ["-f", "concat", "-safe", "0"])
+            cmd += ["-af", filter_chain(measured)]
         cmd += [
             "-c:a", "aac", "-b:a", bitrate, "-ac", "1",
             "-movflags", "+faststart",

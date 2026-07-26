@@ -20,7 +20,94 @@ from audiobooktts.engines import get_engine
 from audiobooktts.epub import Book, parse_epub
 from audiobooktts.packaging import package_m4b
 from audiobooktts.store import ChapterState, JobStore, Manifest, file_sha256
-from audiobooktts.textproc import chunk_text, clean_text, normalize_chapter_title
+from audiobooktts.textproc import (
+    CLAUSE,
+    PARAGRAPH,
+    SENTENCE,
+    chunk_paragraphs,
+    clean_text,
+    normalize_chapter_title,
+)
+
+# Fallback pause lengths; Config overrides these. The engine pads each
+# utterance with ~0.3s leading and ~0.5s trailing silence, which is trimmed
+# off, so these values alone set the pacing.
+GAP_CLAUSE_S = 0.2      # mid-sentence, where a long sentence had to be split
+GAP_SENTENCE_S = 0.65   # after a full stop
+GAP_PARAGRAPH_S = 1.1   # between paragraphs
+GAP_TITLE_S = 1.8       # after the announced chapter title
+
+_SILENCE_THRESHOLD = 0.01
+_SILENCE_KEEP_S = 0.03
+
+
+def _trim_silence(audio: np.ndarray, sample_rate: int) -> np.ndarray:
+    """Strip the model's leading/trailing padding, keeping a short margin."""
+    if audio.size == 0:
+        return audio
+    loud = np.flatnonzero(np.abs(audio) > _SILENCE_THRESHOLD)
+    if loud.size == 0:
+        return np.zeros(0, dtype=np.float32)
+    keep = int(sample_rate * _SILENCE_KEEP_S)
+    start = max(0, int(loud[0]) - keep)
+    end = min(audio.size, int(loud[-1]) + keep)
+    return audio[start:end]
+
+
+def render_chunks(
+    engine,
+    chunks: list[tuple[str, bool]],
+    voice: str,
+    speed: float = 1.0,
+    config: Config | None = None,
+    announces_title: bool = False,
+    on_chunk=None,
+) -> np.ndarray:
+    """Synthesize chunks and join them with the configured pauses.
+
+    Shared by the renderer and the preview so that what you audition is what
+    you get. Previewing through a separate path meant hearing the engine's own
+    ~0.13s sentence gap instead of the configured pacing.
+    """
+    cfg = config or Config()
+    sr = engine.sample_rate
+    gaps = {
+        CLAUSE: getattr(cfg, "gap_clause", GAP_CLAUSE_S),
+        SENTENCE: getattr(cfg, "gap_sentence", GAP_SENTENCE_S),
+        PARAGRAPH: getattr(cfg, "gap_paragraph", GAP_PARAGRAPH_S),
+    }
+    g_title = getattr(cfg, "gap_title", GAP_TITLE_S)
+
+    # Voices differ in natural pace by more than 10%, and Chatterbox ignores the
+    # speed argument entirely, so the correction is a time-stretch applied here.
+    from audiobooktts.mastering import apply_filters, atempo_chain
+    from audiobooktts.pacing import tempo_for
+
+    tempo = tempo_for(engine, voice, getattr(cfg, "target_wpm", 0.0), speed)
+    # Kokoro honours speed natively; let it, and leave the stretch to pacing.
+    native_speed = speed if engine.name == "kokoro" else 1.0
+    if engine.name == "kokoro" and tempo != 1.0:
+        tempo /= speed or 1.0
+
+    pieces: list[np.ndarray] = []
+    for j, (chunk, kind) in enumerate(chunks):
+        if on_chunk is not None:
+            on_chunk(j, len(chunks))
+        audio = _trim_silence(engine.synthesize(chunk, voice, native_speed), sr)
+        if not audio.size:
+            continue
+        pieces.append(audio)
+        gap = g_title if (j == 0 and announces_title) else gaps.get(kind, gaps[SENTENCE])
+        pieces.append(np.zeros(int(sr * gap), dtype=np.float32))
+
+    if not pieces:
+        return np.zeros(0, dtype=np.float32)
+    full = np.concatenate(pieces)
+    if abs(tempo - 1.0) > 0.01:
+        # Stretch the assembled chapter, not each chunk: the gaps scale with the
+        # speech, so pacing stays proportional.
+        full = apply_filters(full, sr, atempo_chain(tempo))
+    return full
 
 
 @dataclass
@@ -46,7 +133,7 @@ def create_job(
     epub_path: str | Path,
     config: Config,
     store: JobStore | None = None,
-    llm_cleanup: bool = False,
+    chapter_voices: dict[int, str] | None = None,
 ) -> Manifest:
     store = store or JobStore()
     book = parse_epub(epub_path)
@@ -61,12 +148,14 @@ def create_job(
         speed=config.speed,
         output_dir=config.output_dir,
         chapters=[
-            ChapterState(index=i, title=normalize_chapter_title(ch.title))
+            ChapterState(
+                index=i,
+                title=normalize_chapter_title(ch.title),
+                voice=(chapter_voices or {}).get(i, ""),
+            )
             for i, ch in enumerate(book.chapters)
         ],
     )
-    if llm_cleanup:
-        manifest.status = "pending"
     store.save(manifest)
     return manifest
 
@@ -77,7 +166,6 @@ def run_job(
     store: JobStore | None = None,
     on_progress: ProgressFn | None = None,
     cancel_event: threading.Event | None = None,
-    llm_cleanup: bool = False,
 ) -> Manifest:
     store = store or JobStore()
     manifest = store.load(job_id)
@@ -97,12 +185,6 @@ def run_job(
         if len(book.chapters) != len(manifest.chapters):
             raise RuntimeError("Chapter count mismatch on resume")
 
-        cleaner = None
-        if llm_cleanup:
-            from audiobooktts.llm_cleanup import get_cleaner
-
-            cleaner = get_cleaner(config.llm)
-
         engine = get_engine(manifest.engine)
         manifest.status = "running"
         store.save(manifest)
@@ -116,30 +198,25 @@ def run_job(
             check_cancel()
 
             text = clean_text(chapter.text)
-            if cleaner is not None:
-                text = cleaner.clean(text)
             # Announce the chapter title before its body
             title = normalize_chapter_title(chapter.title)
-            chunks = chunk_text(text)
+            chunks = chunk_paragraphs(text)
             if title:
-                chunks = [title + "."] + chunks
+                chunks = [(title + ".", PARAGRAPH)] + chunks
             state.n_chunks = len(chunks)
 
-            pieces: list[np.ndarray] = []
-            pause = np.zeros(int(engine.sample_rate * 0.4), dtype=np.float32)
-            for j, chunk in enumerate(chunks):
+            def progress(j: int, total: int, _i=i, _title=title):
                 check_cancel()
                 notify(
-                    Progress(
-                        job_id, "synthesizing", i, n_chapters, j, len(chunks), title
-                    )
+                    Progress(job_id, "synthesizing", _i, n_chapters, j, total, _title)
                 )
-                audio = engine.synthesize(chunk, manifest.voice, manifest.speed)
-                if audio.size:
-                    pieces.append(audio)
-                    pieces.append(pause)
 
-            full = np.concatenate(pieces) if pieces else np.zeros(1, dtype=np.float32)
+            full = render_chunks(
+                engine, chunks, state.voice or manifest.voice, manifest.speed,
+                config=config, announces_title=bool(title), on_chunk=progress,
+            )
+            if not full.size:
+                full = np.zeros(1, dtype=np.float32)
             tmp = audio_path.with_suffix(".tmp.flac")
             sf.write(tmp, full, engine.sample_rate, format="FLAC")
             tmp.replace(audio_path)
@@ -156,6 +233,7 @@ def run_job(
             store=store,
             out_dir=out_dir,
             bitrate=config.bitrate,
+            master=getattr(config, "master_audio", True),
         )
         manifest.output_path = str(output)
         manifest.status = "done"

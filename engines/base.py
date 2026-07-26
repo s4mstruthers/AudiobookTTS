@@ -13,11 +13,16 @@ class Voice:
     id: str
     label: str
     language: str = "en"
+    grade: str = ""  # engine's own quality rating, if it publishes one
 
 
 class TTSEngine(ABC):
     name: str
     sample_rate: int
+    #: Whether the same text and voice always produce the same audio.
+    #: Autoregressive engines sample, so their pace varies run to run and a
+    #: per-voice speaking rate cannot be measured reliably.
+    deterministic: bool = True
 
     @abstractmethod
     def list_voices(self) -> list[Voice]: ...

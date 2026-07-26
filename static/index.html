@@ -63,13 +63,25 @@
   button:hover:not(:disabled) { filter: brightness(1.08); }
   button:disabled { opacity: .5; cursor: not-allowed; }
   button.ghost { background: transparent; color: var(--fg); border: 1px solid var(--border); }
+  /* Fixed width so toggling between "Preview" and "Stop" doesn't shift the row */
+  #previewBtn { min-width: 6.5rem; }
   button.big { width: 100%; padding: .7rem; font-size: 1rem; margin-top: .3rem; }
   .chaps { max-height: 190px; overflow-y: auto; border: 1px solid var(--border); border-radius: 7px; }
-  .chaps div {
-    display: flex; justify-content: space-between; gap: 1rem;
+  .chaps .chaprow {
+    display: flex; align-items: center; gap: .6rem;
     padding: .4rem .65rem; font-size: .85rem; border-bottom: 1px solid var(--border);
+    cursor: pointer; transition: background .12s;
   }
-  .chaps div:last-child { border-bottom: 0; }
+  .chaps .chaprow:last-child { border-bottom: 0; }
+  .chaps .chaprow:hover { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  .chaps .chaprow.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+  .chaps .chaprow .play { color: var(--accent); font-size: .7rem; opacity: .35; }
+  .chaps .chaprow:hover .play, .chaps .chaprow.sel .play { opacity: 1; }
+  .chaps .chaprow .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chaps .chaprow .chapvoice {
+    flex: 0 0 auto; width: auto; min-width: 0; max-width: 11rem;
+    font-size: .75rem; padding: .1rem .3rem; border-radius: 5px;
+  }
   .chaps span.n { color: var(--muted); font-variant-numeric: tabular-nums; }
   .bar { height: 8px; background: var(--border); border-radius: 99px; overflow: hidden; }
   .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .25s; }
@@ -77,6 +89,31 @@
   .pstat .stage { font-weight: 500; }
   .pstat .pct { color: var(--muted); font-variant-numeric: tabular-nums; }
   .hidden { display: none !important; }
+  #pickerBg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 50;
+    padding: 1rem;
+  }
+  #picker {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); width: min(560px, 100%);
+    display: flex; flex-direction: column; max-height: 76vh; overflow: hidden;
+  }
+  #picker h3 { margin: 0; padding: .9rem 1rem .6rem; font-size: .95rem; }
+  #pickerPath {
+    padding: 0 1rem .6rem; color: var(--muted); font-size: .8rem;
+    word-break: break-all; border-bottom: 1px solid var(--border);
+  }
+  #pickerList { overflow-y: auto; flex: 1; }
+  #pickerList div {
+    padding: .45rem 1rem; font-size: .87rem; cursor: pointer;
+    border-bottom: 1px solid var(--border);
+  }
+  #pickerList div:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+  #pickerActions {
+    display: flex; gap: .5rem; justify-content: flex-end;
+    padding: .75rem 1rem; border-top: 1px solid var(--border);
+  }
   .ok { color: var(--ok); } .err { color: var(--err); }
   table { width: 100%; border-collapse: collapse; font-size: .85rem; }
   th { text-align: left; color: var(--muted); font-weight: 500; padding: .3rem .5rem; }
@@ -87,6 +124,18 @@
 </style>
 </head>
 <body>
+<div id="pickerBg" class="hidden">
+  <div id="picker">
+    <h3>Choose a folder</h3>
+    <div id="pickerPath"></div>
+    <div id="pickerList"></div>
+    <div id="pickerActions">
+      <button class="ghost" id="pickCancel">Cancel</button>
+      <button id="pickHere">Save here</button>
+    </div>
+  </div>
+</div>
+
 <main>
   <h1>AudioBookTTS</h1>
   <p class="sub">Turn an epub into a chaptered audiobook with open-source TTS, running locally.</p>
@@ -107,12 +156,23 @@
           <div class="stats" id="bStats"></div>
         </div>
       </div>
-      <div class="chaps" id="chapList" style="margin-top:.9rem"></div>
+      <div style="display:flex;justify-content:space-between;gap:1rem;color:var(--muted);font-size:.78rem;margin:.9rem 0 .35rem">
+        <span>Click a chapter to preview it. Use the dropdown to give a chapter its own voice.</span>
+        <span id="voiceSummary" style="color:var(--accent);white-space:nowrap"></span>
+      </div>
+      <div class="chaps" id="chapList"></div>
     </div>
   </div>
 
   <div class="panel hidden" id="optPanel">
     <h2>2 · Narration</h2>
+    <div class="row">
+      <label class="fl" for="engine">Engine</label>
+      <select id="engine">
+        <option value="kokoro">Kokoro — fast (~17× realtime), fixed voices</option>
+        <option value="chatterbox">Chatterbox — clones your own voice clip (~4× realtime)</option>
+      </select>
+    </div>
     <div class="row">
       <label class="fl" for="voice">Voice</label>
       <select id="voice"></select>
@@ -127,9 +187,7 @@
     <div class="row">
       <label class="fl" for="outDir">Save to</label>
       <input type="text" id="outDir" placeholder="~/Audiobooks">
-    </div>
-    <div class="row">
-      <label class="toggle"><input type="checkbox" id="llm"> LLM text cleanup <span style="color:var(--muted)">(slower; needs a provider configured)</span></label>
+      <button class="ghost" id="browseBtn">Choose…</button>
     </div>
     <button class="big" id="startBtn">Create audiobook</button>
   </div>
@@ -192,16 +250,22 @@ function renderBook() {
   $("bAuthor").textContent = "by " + book.author;
   const words = Math.round(book.total_chars / 5.6);
   const mins = Math.round(words / 155);
+  const n = book.chapters.length;
   $("bStats").textContent =
-    `${book.chapters.length} chapters · ${book.total_chars.toLocaleString()} characters · ` +
+    `${n} ${n === 1 ? "chapter" : "chapters"} · ${book.total_chars.toLocaleString()} characters · ` +
     `roughly ${Math.floor(mins/60)}h ${mins%60}m of audio`;
   if (book.has_cover) {
     $("cover").src = "/api/cover?path=" + encodeURIComponent(book.path);
     $("cover").classList.remove("hidden");
   } else $("cover").classList.add("hidden");
-  $("chapList").innerHTML = book.chapters.map(c =>
-    `<div><span>${escapeHtml(c.title)}</span><span class="n">${c.chars.toLocaleString()}</span></div>`
-  ).join("");
+  previewChapter = 0;
+  chapterVoices = {};
+  updateVoiceSummary();
+  renderChapters();
+  // Loading a book must not leave a stale sample or error from the last one,
+  // and must never start audio on its own — previews are always explicit.
+  if (previewActive()) stopPreview();
+  $("sampleText").innerHTML = "";
   $("bookInfo").classList.remove("hidden");
   $("optPanel").classList.remove("hidden");
 }
@@ -209,39 +273,201 @@ function renderBook() {
 const escapeHtml = s => s.replace(/[&<>"']/g, c =>
   ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+// Which chapter the preview samples. Any chapter is clickable — the opening of
+// a book is often atypical (short, scene-setting), so judging a voice on it
+// alone is misleading.
+let previewChapter = 0;
+
+// Per-chapter voice overrides: {chapterIndex: voiceId}. Books with more than
+// one narrator — an epilogue in another character's voice — need this.
+let chapterVoices = {};
+
+function voiceOptionsHtml(selected) {
+  const opts = [...$("voice").options].map(o =>
+    `<option value="${escapeHtml(o.value)}"${o.value === selected ? " selected" : ""}>` +
+    `${escapeHtml(o.textContent.split("—")[0].trim())}</option>`).join("");
+  return `<option value=""${!selected ? " selected" : ""}>— default —</option>` + opts;
+}
+
+function renderChapters() {
+  $("chapList").innerHTML = book.chapters.map(c =>
+    `<div class="chaprow${c.index === previewChapter ? " sel" : ""}" data-i="${c.index}"` +
+    ` title="Click to preview this chapter">` +
+      `<span class="play">▶</span>` +
+      `<span class="t">${escapeHtml(c.title)}</span>` +
+      `<select class="chapvoice" data-i="${c.index}" title="Voice for this chapter">` +
+        voiceOptionsHtml(chapterVoices[c.index] || "") +
+      `</select>` +
+      `<span class="n">${c.chars.toLocaleString()}</span>` +
+    `</div>`).join("");
+}
+
+$("chapList").onclick = e => {
+  // Using the per-chapter voice picker must not also fire a preview.
+  if (e.target.closest(".chapvoice")) return;
+  const row = e.target.closest(".chaprow");
+  if (!row || !book) return;
+  previewChapter = +row.dataset.i;
+  renderChapters();
+  if (previewActive()) stopPreview();
+  $("previewBtn").click();
+};
+
+$("chapList").onchange = e => {
+  const sel = e.target.closest(".chapvoice");
+  if (!sel) return;
+  const i = +sel.dataset.i;
+  if (sel.value) chapterVoices[i] = sel.value; else delete chapterVoices[i];
+  updateVoiceSummary();
+};
+
+function updateVoiceSummary() {
+  const n = Object.keys(chapterVoices).length;
+  $("voiceSummary").textContent = n
+    ? `${n} chapter${n === 1 ? "" : "s"} using a different voice`
+    : "";
+}
+
 // ---- options ------------------------------------------------------------
-$("speed").oninput = e => $("speedVal").textContent = (+e.target.value).toFixed(2) + "×";
+$("speed").oninput = e => {
+  $("speedVal").textContent = (+e.target.value).toFixed(2) + "×";
+  if (typeof previewActive === "function" && previewActive()) stopPreview();
+};
+
+async function loadVoices(engine, preferred) {
+  const v = await fetch(`/api/voices?engine=${engine}`).then(r => r.json());
+  // Group by accent and show the model's quality grade — the D-tier voices
+  // sound noticeably rougher over a whole book.
+  const groups = {};
+  v.voices.forEach(x => (groups[x.language] = groups[x.language] || []).push(x));
+  const groupName = { "en-GB": "British", "en-US": "American", "en": "Voices" };
+  $("voice").innerHTML = Object.entries(groups).map(([lang, list]) =>
+    `<optgroup label="${groupName[lang] || lang}">` +
+    list.map(x => `<option value="${x.id}">${escapeHtml(x.label)}` +
+      `${x.grade && x.grade !== "clone" ? "  [" + x.grade + "]" : ""}</option>`).join("") +
+    `</optgroup>`).join("");
+  if (preferred && [...$("voice").options].some(o => o.value === preferred))
+    $("voice").value = preferred;
+  if (typeof book !== "undefined" && book) renderChapters();
+  if (engine === "chatterbox" && v.voices.length <= 1)
+    $("sampleText").textContent =
+      "No reference clips yet — drop a 5–10s .wav into ~/.audiobooktts/voices/ to clone a voice.";
+}
+
+$("engine").onchange = async () => {
+  if (previewActive()) stopPreview();
+  await loadVoices($("engine").value);
+  // Voice ids are engine-specific, so per-chapter picks cannot carry over.
+  chapterVoices = {};
+  updateVoiceSummary();
+  if (book) renderChapters();
+};
 
 (async () => {
-  const [v, c] = await Promise.all([
-    fetch("/api/voices").then(r => r.json()),
-    fetch("/api/config").then(r => r.json()),
-  ]);
-  $("voice").innerHTML = v.voices.map(x =>
-    `<option value="${x.id}">${escapeHtml(x.label)}</option>`).join("");
-  $("voice").value = c.voice;
+  const c = await fetch("/api/config").then(r => r.json());
+  $("engine").value = c.engine;
+  await loadVoices(c.engine, c.voice);
   $("speed").value = c.speed;
   $("speedVal").textContent = (+c.speed).toFixed(2) + "×";
   $("outDir").value = c.output_dir;
   refreshJobs();
 })();
 
+// One preview plays at a time. Without tearing down the previous audio element
+// and aborting the in-flight request, clicking Preview again — or switching
+// voice mid-playback — leaves both clips playing over each other, and a slow
+// synthesis can land after a newer one.
+let previewAudio = null, previewUrl = null, previewAbort = null;
+
+function stopPreview() {
+  if (previewAbort) { previewAbort.abort(); previewAbort = null; }
+  if (previewAudio) { previewAudio.pause(); previewAudio = null; }
+  if (previewUrl) { URL.revokeObjectURL(previewUrl); previewUrl = null; }
+  const btn = $("previewBtn");
+  btn.textContent = "▶ Preview";
+  btn.disabled = false;
+}
+
+const previewActive = () => !!(previewAudio || previewAbort);
+
+function renderSample(sample) {
+  $("sampleText").innerHTML = sample ? `<div>“${escapeHtml(sample)}…”</div>` : "";
+}
+
 $("previewBtn").onclick = async () => {
   if (!book) return;
   const btn = $("previewBtn");
-  btn.disabled = true; btn.textContent = "Synthesizing…";
+  if (previewActive()) { stopPreview(); return; }  // second click stops
+
+  btn.textContent = "■ Stop";
+  const ac = new AbortController();
+  previewAbort = ac;
   try {
     const url = `/api/preview?path=${encodeURIComponent(book.path)}` +
-      `&voice=${$("voice").value}&speed=${$("speed").value}`;
-    const r = await fetch(url);
+      `&voice=${chapterVoices[previewChapter] || $("voice").value}` +
+      `&speed=${$("speed").value}` +
+      `&engine=${$("engine").value}` +
+      `&chapter=${previewChapter}`;
+    const r = await fetch(url, { signal: ac.signal });
     if (!r.ok) throw new Error("preview failed");
-    $("sampleText").textContent = "“" + (r.headers.get("X-Sample-Text") || "") + "…”";
+    let sample = r.headers.get("X-Sample-Text") || "";
+    try { sample = decodeURIComponent(sample); } catch (_) {}
     const blob = await r.blob();
-    new Audio(URL.createObjectURL(blob)).play();
+    if (ac.signal.aborted) return;
+    previewAbort = null;
+    renderSample(sample);
+    previewUrl = URL.createObjectURL(blob);
+    previewAudio = new Audio(previewUrl);
+    previewAudio.onended = stopPreview;
+    previewAudio.onerror = stopPreview;
+    await previewAudio.play();
   } catch (e) {
+    if (e.name === "AbortError") return;  // stopPreview already reset the UI
     $("sampleText").innerHTML = '<span class="err">Preview failed.</span>';
-  } finally { btn.disabled = false; btn.textContent = "▶ Preview"; }
+    stopPreview();
+  }
 };
+
+// Changing the voice or speed invalidates whatever is playing.
+$("voice").onchange = () => { if (previewActive()) stopPreview(); };
+
+// ---- folder picker ------------------------------------------------------
+// The File System Access API returns an opaque handle rather than a path, and
+// the render happens server-side, so the listing has to come from the server.
+let pickerPath = "";
+
+async function openPicker(start) {
+  const r = await fetch(`/api/browse?path=${encodeURIComponent(start || "")}`);
+  if (!r.ok) { alert("Could not open that folder."); return; }
+  const d = await r.json();
+  pickerPath = d.path;
+  $("pickerPath").textContent = d.path;
+  const rows = [];
+  if (d.parent) rows.push(`<div data-p="${escapeHtml(d.parent)}">↰ ..</div>`);
+  rows.push(...d.dirs.map(x =>
+    `<div data-p="${escapeHtml(x.path)}">📁 ${escapeHtml(x.name)}</div>`));
+  $("pickerList").innerHTML = rows.join("") ||
+    `<div style="color:var(--muted);cursor:default">No sub-folders here.</div>`;
+  $("pickerBg").classList.remove("hidden");
+}
+
+$("browseBtn").onclick = () => openPicker($("outDir").value);
+$("pickerList").onclick = e => {
+  const row = e.target.closest("div[data-p]");
+  if (row) openPicker(row.dataset.p);
+};
+$("pickCancel").onclick = () => $("pickerBg").classList.add("hidden");
+$("pickHere").onclick = () => {
+  $("outDir").value = pickerPath;
+  $("pickerBg").classList.add("hidden");
+};
+$("pickerBg").onclick = e => {
+  if (e.target === $("pickerBg")) $("pickerBg").classList.add("hidden");
+};
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape" && !$("pickerBg").classList.contains("hidden"))
+    $("pickerBg").classList.add("hidden");
+});
 
 // ---- run ----------------------------------------------------------------
 $("startBtn").onclick = async () => {
@@ -251,7 +477,8 @@ $("startBtn").onclick = async () => {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       path: book.path, voice: $("voice").value, speed: +$("speed").value,
-      output_dir: $("outDir").value || null, llm_cleanup: $("llm").checked,
+      engine: $("engine").value, chapter_voices: chapterVoices,
+      output_dir: $("outDir").value || null,
     }),
   });
   if (!r.ok) { $("startBtn").disabled = false; return; }
@@ -314,24 +541,58 @@ $("cancelBtn").onclick = async () => {
 };
 
 // ---- jobs list ----------------------------------------------------------
+const smallBtn = (label, fn, id) =>
+  `<button class="ghost" style="padding:.2rem .6rem;font-size:.8rem;margin-right:.3rem" ` +
+  `onclick="${fn}('${id}')">${label}</button>`;
+
 async function refreshJobs() {
   const { jobs } = await fetch("/api/jobs").then(r => r.json());
   $("jobRows").innerHTML = jobs.length ? jobs.map(j => {
+    // Every state must offer something to do, or a job can get stuck with no
+    // available action (as orphaned "running" jobs used to).
     let action = "";
-    if (j.status === "done") action = `<a href="/api/jobs/${j.job_id}/download">Download</a>`;
-    else if (["cancelled", "failed"].includes(j.status))
-      action = `<button class="ghost" style="padding:.2rem .6rem;font-size:.8rem" onclick="resumeJob('${j.job_id}')">Resume</button>`;
+    if (j.live) {
+      action = smallBtn("Watch", "watchJob", j.job_id) +
+               smallBtn("Cancel", "cancelJob", j.job_id);
+    } else if (j.status === "done") {
+      action = `<a href="/api/jobs/${j.job_id}/download">Download</a>` +
+               ` &nbsp;${smallBtn("Delete", "deleteJob", j.job_id)}`;
+    } else {
+      action = smallBtn("Resume", "resumeJob", j.job_id) +
+               smallBtn("Delete", "deleteJob", j.job_id);
+    }
+    const status = j.status === "interrupted"
+      ? `<span title="${escapeHtml(j.error || "")}">interrupted</span>` : j.status;
     return `<tr><td>${escapeHtml(j.title)}</td><td>${escapeHtml(j.voice)}</td>` +
-      `<td>${j.status}</td><td>${j.done}/${j.total}</td><td>${action}</td></tr>`;
+      `<td>${status}</td><td>${j.done}/${j.total}</td><td style="white-space:nowrap">${action}</td></tr>`;
   }).join("") : `<tr><td colspan="5" style="color:var(--muted)">No jobs yet.</td></tr>`;
+}
+
+function attach(id) {
+  currentJob = id;
+  $("progPanel").classList.remove("hidden");
+  $("pResult").innerHTML = "";
+  $("cancelBtn").classList.remove("hidden");
+  listen(id);
 }
 
 async function resumeJob(id) {
   await fetch(`/api/jobs/${id}/resume`, { method: "POST" });
-  currentJob = id;
-  $("progPanel").classList.remove("hidden");
-  $("pResult").innerHTML = ""; $("cancelBtn").classList.remove("hidden");
-  listen(id);
+  attach(id);
+}
+
+function watchJob(id) { attach(id); }
+
+async function cancelJob(id) {
+  await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
+  refreshJobs();
+}
+
+async function deleteJob(id) {
+  if (!confirm("Delete this job and its part-finished audio?")) return;
+  const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+  if (!r.ok) alert("Could not delete — cancel the job first.");
+  refreshJobs();
 }
 </script>
 </body>

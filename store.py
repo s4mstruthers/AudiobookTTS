@@ -17,6 +17,9 @@ from audiobooktts.config import JOBS_DIR
 class ChapterState:
     index: int
     title: str
+    # Empty means "use the job's voice". Set per chapter so a book with more
+    # than one narrator — an epilogue in another character's voice — works.
+    voice: str = ""
     n_chunks: int = 0
     done: bool = False
     duration_s: float = 0.0
@@ -32,7 +35,8 @@ class Manifest:
     engine: str
     voice: str
     speed: float
-    status: str = "pending"  # pending | running | done | failed | cancelled
+    # pending | running | done | failed | cancelled | interrupted
+    status: str = "pending"
     error: str = ""
     created_at: float = field(default_factory=time.time)
     # Where the finished m4b goes. Persisted so `resume` writes to the same
@@ -99,6 +103,23 @@ class JobStore:
             except Exception:
                 continue
         return sorted(out, key=lambda m: m.created_at, reverse=True)
+
+    def reconcile_running(self) -> list[str]:
+        """Mark orphaned jobs as interrupted, returning the ids changed.
+
+        Runs are tracked in memory, so a job still marked "running" when a
+        fresh process starts was killed with its server. Left alone it stays
+        "running" forever: it can never be cancelled (no thread to signal) and
+        never offers Resume, so the user has no way to act on it.
+        """
+        changed = []
+        for manifest in self.list_jobs():
+            if manifest.status == "running":
+                manifest.status = "interrupted"
+                manifest.error = "Interrupted when the server stopped"
+                self.save(manifest)
+                changed.append(manifest.job_id)
+        return changed
 
     def delete(self, job_id: str) -> None:
         import shutil

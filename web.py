@@ -12,7 +12,9 @@ from pathlib import Path
 from urllib.parse import quote
 
 import soundfile as sf
-from fastapi import FastAPI, HTTPException, UploadFile
+import re
+
+from fastapi import FastAPI, Form, HTTPException, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -32,10 +34,17 @@ from audiobooktts.pipeline import (
     run_job,
 )
 from audiobooktts.store import JobStore
-from audiobooktts.textproc import clean_text, preview_chunks, preview_sample
+from audiobooktts.textproc import (
+    PARAGRAPH,
+    clean_text,
+    preview_chunks,
+    preview_sample,
+)
 
 STATIC_DIR = Path(__file__).parent / "static"
 UPLOAD_DIR = APP_DIR / "uploads"
+COVER_DIR = APP_DIR / "covers"
+SOURCE_DIR = APP_DIR / "voice_sources"
 
 app = FastAPI(title="AudioBookTTS")
 store = JobStore()
@@ -56,7 +65,7 @@ def index() -> HTMLResponse:
 
 
 @app.get("/api/voices")
-def voices(engine: str = "kokoro"):
+def voices(engine: str = "chatterbox"):
     e = get_engine(engine)
     return {"engine": e.name, "voices": [v.__dict__ for v in e.list_voices()]}
 
@@ -71,6 +80,226 @@ def get_config():
         "bitrate": cfg.bitrate,
         "output_dir": cfg.output_dir,
     }
+
+
+@app.get("/api/voice-library")
+def voice_library():
+    """Saved reference clips, with duration and measured pace."""
+    from audiobooktts.voices import list_voices
+
+    from audiobooktts.voices import conditioning_windows
+
+    return {"voices": list_voices(), "windows": conditioning_windows()}
+
+
+@app.get("/api/voice-library/{name}/audio")
+def voice_audio(name: str):
+    from audiobooktts.engines.chatterbox import VOICES_DIR
+
+    path = VOICES_DIR / f"{name}.wav"
+    if not path.is_file():
+        raise HTTPException(404, "No such voice")
+    return FileResponse(path, media_type="audio/wav")
+
+
+@app.get("/api/voice-source/{name}/peaks")
+def voice_source_peaks(name: str, buckets: int = 900):
+    """Waveform envelope of the recording a voice was cut from."""
+    from audiobooktts.voices import VoiceClipError, source_path, waveform_peaks
+
+    src = source_path(name)
+    if src is None:
+        raise HTTPException(404, "No stored recording for this voice")
+    try:
+        data = waveform_peaks(src, buckets=buckets)
+    except VoiceClipError as e:
+        raise HTTPException(400, str(e))
+    data["name"] = name
+    data["source"] = src.name
+    return data
+
+
+@app.get("/api/voice-source/{name}/segment")
+def voice_source_segment(name: str, start: float = 0.0, duration: float = 15.0):
+    """A stretch of the source recording, to audition before committing."""
+    from audiobooktts.voices import VoiceClipError, cut_segment, source_path
+
+    src = source_path(name)
+    if src is None:
+        raise HTTPException(404, "No stored recording for this voice")
+    try:
+        return Response(cut_segment(src, start, duration), media_type="audio/wav")
+    except VoiceClipError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/voice-source")
+async def upload_voice_source(file: UploadFile, name: str = Form(...)):
+    """Store a recording without cutting it yet, so it can be edited first."""
+    from audiobooktts.voices import VoiceClipError, store_source, waveform_peaks
+
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")
+    if not safe:
+        raise HTTPException(400, "Please give the voice a name")
+    SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+    tmp = SOURCE_DIR / f"__upload{Path(file.filename or '').suffix or '.audio'}"
+    with open(tmp, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    try:
+        stored = store_source(tmp, safe)
+        data = waveform_peaks(stored)
+    except VoiceClipError as e:
+        raise HTTPException(400, str(e))
+    finally:
+        tmp.unlink(missing_ok=True)
+    data["name"] = safe
+    return data
+
+
+@app.post("/api/voice-library")
+async def create_voice(
+    file: UploadFile,
+    name: str = Form(...),
+    start: float = Form(45.0),
+    duration: float = Form(15.0),
+):
+    """Build a reference clip from an uploaded recording."""
+    from audiobooktts.voices import VoiceClipError, add_voice
+
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", name).strip("_")
+    if not safe:
+        raise HTTPException(400, "Please give the voice a name")
+    SOURCE_DIR.mkdir(parents=True, exist_ok=True)
+    # Keep the source so the clip can be re-cut from a different point later.
+    src = SOURCE_DIR / f"{safe}{Path(file.filename or '').suffix or '.audio'}"
+    with open(src, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    try:
+        add_voice(src, safe, start=start, duration=duration)
+    except VoiceClipError as e:
+        raise HTTPException(400, str(e))
+    return {"name": safe, "source": str(src)}
+
+
+@app.post("/api/voice-library/{name}/recut")
+def recut_voice(name: str, payload: dict):
+    """Re-cut an existing voice from a different point in its source."""
+    from audiobooktts.pacing import forget
+    from audiobooktts.voices import VoiceClipError, add_voice
+
+    matches = list(SOURCE_DIR.glob(f"{name}.*")) if SOURCE_DIR.is_dir() else []
+    if not matches:
+        raise HTTPException(
+            404, "No stored source for this voice — re-upload the recording"
+        )
+    try:
+        add_voice(
+            matches[0], name,
+            start=float(payload.get("start", 45.0)),
+            duration=float(payload.get("duration", 15.0)),
+        )
+    except VoiceClipError as e:
+        raise HTTPException(400, str(e))
+    forget(name)  # the clip changed, so its measured pace is stale
+    return {"name": name, "recut": True}
+
+
+@app.post("/api/voice-library/{name}/recalibrate")
+def recalibrate_voice(name: str):
+    from audiobooktts.pacing import forget, measure_wpm
+
+    forget(name)
+    wpm = measure_wpm(get_engine("chatterbox"), name)
+    return {"name": name, "wpm": round(wpm, 1)}
+
+
+@app.delete("/api/voice-library/{name}")
+def remove_voice(name: str):
+    from audiobooktts.voices import delete_voice
+
+    if not delete_voice(name):
+        raise HTTPException(404, "No such voice")
+    for stale in SOURCE_DIR.glob(f"{name}.*") if SOURCE_DIR.is_dir() else []:
+        stale.unlink(missing_ok=True)
+    return {"deleted": name}
+
+
+@app.post("/api/cover")
+async def upload_cover(file: UploadFile):
+    """A custom cover image, embedded in place of the epub's own."""
+    COVER_DIR.mkdir(parents=True, exist_ok=True)
+    suffix = Path(file.filename or "").suffix.lower() or ".jpg"
+    if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
+        raise HTTPException(400, "Cover must be a jpg, png or webp image")
+    dest = COVER_DIR / f"cover{suffix}"
+    for old in COVER_DIR.glob("cover.*"):
+        old.unlink(missing_ok=True)
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(file.file, f)
+    return {"path": str(dest)}
+
+
+@app.get("/api/cover-file")
+def cover_file(path: str):
+    p = Path(path)
+    if not p.is_file():
+        raise HTTPException(404, "No cover")
+    return FileResponse(p)
+
+
+@app.get("/api/pronunciation")
+def get_pronunciation():
+    from audiobooktts.pronunciation import load_lexicon
+
+    lex = load_lexicon()
+    return {"entries": [{"word": k, "say_as": lex[k]} for k in sorted(lex)]}
+
+
+@app.post("/api/pronunciation")
+def set_pronunciation(payload: dict):
+    from audiobooktts.pronunciation import add
+
+    word = (payload.get("word") or "").strip()
+    say_as = (payload.get("say_as") or "").strip()
+    if not word or not say_as:
+        raise HTTPException(400, "Both the word and how to say it are needed")
+    add(word, say_as)
+    return {"word": word, "say_as": say_as}
+
+
+@app.delete("/api/pronunciation/{word}")
+def delete_pronunciation(word: str):
+    from audiobooktts.pronunciation import remove
+
+    remove(word)
+    return {"deleted": word}
+
+
+@app.get("/api/pronunciation/try")
+def try_pronunciation(word: str, voice: str, say_as: str = "", engine: str = "chatterbox"):
+    """Hear one word — as written, or as a candidate respelling.
+
+    Spoken inside a short carrier sentence, because a word alone gets an
+    unnatural reading that tells you little about how it will sound in the book.
+    """
+    spoken = (say_as or word).strip()
+    if not spoken:
+        raise HTTPException(400, "Nothing to say")
+    e = get_engine(engine)
+    audio = e.synthesize(f"They sailed on towards {spoken}, arriving at dusk.", voice)
+    buf = io.BytesIO()
+    sf.write(buf, audio, e.sample_rate, format="WAV")
+    buf.seek(0)
+    return Response(buf.read(), media_type="audio/wav")
+
+
+@app.get("/api/pronunciation/suggest")
+def suggest_pronunciation(path: str, limit: int = 40):
+    from audiobooktts.pronunciation import suggest
+
+    if not Path(path).is_file():
+        raise HTTPException(400, "Unknown epub")
+    return {"words": [{"word": w, "count": n} for w, n in suggest(path, limit=limit)]}
 
 
 @app.get("/api/browse")
@@ -135,7 +364,7 @@ def cover(path: str):
 
 
 @app.get("/api/preview")
-def preview(path: str, voice: str, engine: str = "kokoro", speed: float = 1.0,
+def preview(path: str, voice: str, engine: str = "chatterbox", speed: float = 1.0,
             chapter: int = 0):
     """Synthesize a short sample of this book's own text as a wav."""
     book = parse_epub(path)
@@ -144,10 +373,13 @@ def preview(path: str, voice: str, engine: str = "kokoro", speed: float = 1.0,
     ch = book.chapters[min(chapter, len(book.chapters) - 1)]
     cfg = Config.load()
     text = clean_text(ch.text)
-    sample = preview_sample(text)
+    # Show the book's wording, not the respellings fed to the engine.
+    sample = preview_sample(clean_text(ch.text, respell=False))
     # Render through the same path as the real thing, so the pacing, pauses and
     # loudness you audition are the ones you get.
-    chunks = preview_chunks(text) or [(sample, True)]
+    chunks = preview_chunks(
+        text, unit=getattr(cfg, "synthesis_unit", "paragraph")
+    ) or [(sample, PARAGRAPH)]
 
     e = get_engine(engine)
     audio = render_chunks(e, chunks, voice, speed, config=cfg)
@@ -214,6 +446,9 @@ def start_job(payload: dict):
     raw = payload.get("chapter_voices") or {}
     chapter_voices = {int(k): v for k, v in raw.items() if v}
     manifest = create_job(path, cfg, store, chapter_voices=chapter_voices)
+    if payload.get("cover_path"):
+        manifest.cover_path = payload["cover_path"]
+        store.save(manifest)
     _start_runner(manifest.job_id, cfg)
     return {"job_id": manifest.job_id, "n_chapters": len(manifest.chapters)}
 

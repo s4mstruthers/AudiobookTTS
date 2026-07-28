@@ -18,24 +18,36 @@ class Config:
     # rather than being clobbered when you switch. Empty means "pick a sensible
     # one for this engine".
     voice: str = ""
-    voice_by_engine: dict[str, str] = field(
-        default_factory=lambda: {"kokoro": "bf_emma"}
-    )
+    voice_by_engine: dict[str, str] = field(default_factory=dict)
     speed: float = 1.0
     bitrate: str = "80k"
     output_dir: str = str(Path.home() / "Audiobooks")
     # Pause lengths in seconds. Every sentence is synthesised separately so
     # these fully determine the pacing; the engine's own sentence gap (~0.13s)
     # is trimmed away first. Tune to taste.
-    gap_clause: float = 0.2    # mid-sentence, where a long sentence was split
-    gap_sentence: float = 0.65  # after a full stop
-    gap_paragraph: float = 1.1
-    gap_title: float = 1.8
+    gap_clause: float = 0.25   # mid-sentence, where a long sentence was split
+    # Only applied where a long paragraph had to be split across calls; set to
+    # roughly the engine's own sentence gap so the join is inaudible.
+    gap_sentence: float = 0.3
+    gap_paragraph: float = 1.9  # a real beat between paragraphs
+    gap_title: float = 2.6      # after the announced chapter title
+    # Off by default: the engine's own rhythm between sentences sounds right,
+    # and forcing every full stop to a fixed length made the reading laboured.
+    # Paragraph breaks are still inserted, which is where a beat is wanted.
+    stretch_sentence_pauses: bool = False
     # Match every voice to one narration pace. Voices otherwise differ by over
     # 10%, and most run faster than a commercial audiobook. 0 disables it.
+    # "paragraph" reads a whole paragraph in one call so it flows, then
+    # lengthens the gaps the engine left between its sentences. "sentence"
+    # generates each sentence separately: exact pauses, but each one starts
+    # cold and the delivery sounds disconnected.
+    synthesis_unit: str = "paragraph"
     target_wpm: float = 160.0
     # Master the finished book to ACX loudness (-19 LUFS, peaks under -3 dB).
     master_audio: bool = True
+    # Which Chatterbox weights to load. "turbo" variants are distilled and
+    # fast; the base model is slower but reproduces a voice more closely.
+    chatterbox_model: str = "mlx-community/chatterbox-turbo-8bit"
 
     @classmethod
     def load(cls) -> "Config":

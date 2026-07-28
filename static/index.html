@@ -89,6 +89,72 @@
   .pstat .stage { font-weight: 500; }
   .pstat .pct { color: var(--muted); font-variant-numeric: tabular-nums; }
   .hidden { display: none !important; }
+  #pronBg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 61;
+    display: flex; align-items: center; justify-content: center; padding: 1rem;
+  }
+  #pronPanel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); width: min(680px, 100%);
+    max-height: 84vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  #pronPanel h3 { margin: 0; padding: .9rem 1rem .4rem; font-size: .95rem; }
+  #pronRows { overflow-y: auto; border-top: 1px solid var(--border); }
+  #pronRows .pitem {
+    display: flex; align-items: center; gap: .5rem;
+    padding: .4rem 1rem; border-bottom: 1px solid var(--border); font-size: .85rem;
+  }
+  #pronRows .pitem .pw { flex: 0 0 8rem; font-weight: 500; }
+  #pronRows .pitem .ps {
+    flex: 1; color: var(--muted); font-size: .8rem;
+    font-family: ui-monospace, SFMono-Regular, monospace;
+  }
+  #pronAdd { padding: .8rem 1rem; border-top: 1px solid var(--border); }
+  #pronAdd .vrow { display: flex; gap: .5rem; margin-bottom: .5rem; flex-wrap: wrap; }
+  #pronAdd input[type=text] { flex: 1; min-width: 10rem; }
+  #pStatus { font-size: .8rem; margin-top: .4rem; }
+  #pronActions {
+    display: flex; justify-content: flex-end; gap: .5rem;
+    padding: .7rem 1rem; border-top: 1px solid var(--border);
+  }
+  #voiceBg {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 60;
+    display: flex; align-items: center; justify-content: center; padding: 1rem;
+  }
+  #voicePanel {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: var(--radius); width: min(640px, 100%);
+    max-height: 84vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  #voicePanel h3 { margin: 0; padding: .9rem 1rem .6rem; font-size: .95rem; }
+  #voiceRows { overflow-y: auto; border-top: 1px solid var(--border); }
+  #voiceRows .vitem {
+    display: flex; align-items: center; gap: .6rem;
+    padding: .5rem 1rem; border-bottom: 1px solid var(--border); font-size: .85rem;
+  }
+  #voiceRows .vitem .vname { flex: 1; font-weight: 500; }
+  #voiceRows .vitem .vmeta { color: var(--muted); font-size: .78rem; }
+  #voiceAdd { padding: .8rem 1rem; border-top: 1px solid var(--border); }
+  #voiceAdd .vrow { display: flex; gap: .5rem; margin-bottom: .5rem; }
+  #voiceAdd input[type=text] { flex: 1; }
+  #voiceAdd input[type=number] { width: 5rem; flex: 0 0 auto; }
+  #voiceAdd input[type=file] { flex: 1; font-size: .8rem; }
+  .vhint { color: var(--muted); font-size: .75rem; }
+  #vStatus, #weStatus { font-size: .8rem; margin-top: .5rem; }
+  #waveEditor { padding: .8rem 1rem; border-top: 1px solid var(--border); }
+  .wehead { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: .4rem; }
+  #weCanvas {
+    width: 100%; height: 120px; display: block; border-radius: 7px;
+    background: var(--bg); border: 1px solid var(--border); cursor: crosshair;
+    touch-action: none;
+  }
+  .werow { display: flex; gap: .5rem; align-items: center; margin: .6rem 0; flex-wrap: wrap; }
+  .werow label { font-size: .8rem; color: var(--muted); display: flex; align-items: center; gap: .3rem; }
+  .werow input[type=number] { width: 5rem; }
+  #voiceActions {
+    display: flex; justify-content: flex-end; gap: .5rem;
+    padding: .7rem 1rem; border-top: 1px solid var(--border);
+  }
   #pickerBg {
     position: fixed; inset: 0; background: rgba(0,0,0,.45);
     display: flex; align-items: center; justify-content: center; z-index: 50;
@@ -136,6 +202,71 @@
   </div>
 </div>
 
+<div id="pronBg" class="hidden">
+  <div id="pronPanel">
+    <h3>Pronunciation</h3>
+    <div class="vhint" style="padding:0 1rem .6rem">
+      Hear a name as written, try a respelling, keep whichever sounds right.
+      Every spelling here is a guess until you have checked it.
+    </div>
+    <div id="pronRows"></div>
+    <div id="pronAdd">
+      <div class="vrow">
+        <input type="text" id="pWord" placeholder="Word in the book, e.g. Fereale">
+        <input type="text" id="pSay" placeholder="Say it like… e.g. fer-real">
+      </div>
+      <div class="vrow">
+        <button class="ghost" id="pHearRaw">▶ As written</button>
+        <button class="ghost" id="pHearTry">▶ As respelled</button>
+        <button id="pSave">Save</button>
+        <button class="ghost" id="pSuggest">Find names in this book</button>
+      </div>
+      <div id="pStatus"></div>
+    </div>
+    <div id="pronActions"><button class="ghost" id="pronClose">Done</button></div>
+  </div>
+</div>
+
+<div id="voiceBg" class="hidden">
+  <div id="voicePanel">
+    <h3>Voices</h3>
+    <div id="voiceRows"></div>
+    <div id="voiceAdd">
+      <div class="vrow">
+        <input type="file" id="vFile" accept="audio/*,video/*">
+      </div>
+      <div class="vrow">
+        <input type="text" id="vName" placeholder="Name, e.g. irene">
+        <button id="vAdd">Upload &amp; choose clip…</button>
+      </div>
+      <div class="vhint" id="vHint">
+        Upload the whole recording — you pick the clip on the waveform next.
+      </div>
+      <div id="vStatus"></div>
+    </div>
+    <div id="waveEditor" class="hidden">
+      <div class="wehead">
+        <strong id="weName"></strong>
+        <span id="weRange" class="vmeta"></span>
+      </div>
+      <canvas id="weCanvas" height="120"></canvas>
+      <div class="werow">
+        <label>Start <input type="number" id="weStart" step="0.5" min="0"></label>
+        <label>Length <input type="number" id="weDur" step="0.5" min="6" max="30"></label>
+        <button class="ghost" id="wePlay">▶ Hear selection</button>
+        <button id="weSave">Save as voice</button>
+        <button class="ghost" id="weCancel">Back</button>
+      </div>
+      <div class="vhint">
+        Drag the shaded band to move it, or its edges to resize. Click anywhere
+        to jump. Audition before saving — the clip decides how the voice sounds.
+      </div>
+      <div id="weStatus"></div>
+    </div>
+    <div id="voiceActions"><button class="ghost" id="voiceClose">Done</button></div>
+  </div>
+</div>
+
 <main>
   <h1>AudioBookTTS</h1>
   <p class="sub">Turn an epub into a chaptered audiobook with open-source TTS, running locally.</p>
@@ -167,22 +298,26 @@
   <div class="panel hidden" id="optPanel">
     <h2>2 · Narration</h2>
     <div class="row">
-      <label class="fl" for="engine">Engine</label>
-      <select id="engine">
-        <option value="kokoro">Kokoro — fast (~17× realtime), fixed voices</option>
-        <option value="chatterbox">Chatterbox — clones your own voice clip (~4× realtime)</option>
-      </select>
-    </div>
-    <div class="row">
       <label class="fl" for="voice">Voice</label>
       <select id="voice"></select>
       <button class="ghost" id="previewBtn">▶ Preview</button>
+      <button class="ghost" id="manageVoices">Voices…</button>
+      <button class="ghost" id="managePron">Names…</button>
     </div>
     <div id="sampleText"></div>
     <div class="row" style="margin-top:.85rem">
       <label class="fl" for="speed">Speed</label>
       <input type="range" id="speed" min="0.7" max="1.4" step="0.05" value="1">
       <span id="speedVal" style="font-variant-numeric:tabular-nums;min-width:2.6rem">1.00×</span>
+    </div>
+    <div class="row">
+      <label class="fl" for="coverBtn">Cover</label>
+      <input type="file" id="coverFile" accept="image/*" class="hidden">
+      <button class="ghost" id="coverBtn">Choose image…</button>
+      <img id="coverPreview" class="hidden" alt="Cover"
+           style="height:2.4rem;border-radius:4px;border:1px solid var(--border)">
+      <span id="coverName" style="color:var(--muted);font-size:.8rem"></span>
+      <button class="ghost hidden" id="coverClear">Use the epub's</button>
     </div>
     <div class="row">
       <label class="fl" for="outDir">Save to</label>
@@ -217,6 +352,8 @@
 
 <script>
 const $ = id => document.getElementById(id);
+const ENGINE = "chatterbox";
+let coverPath = "";
 let book = null, currentJob = null, es = null;
 
 // ---- upload -------------------------------------------------------------
@@ -354,19 +491,10 @@ async function loadVoices(engine, preferred) {
       "No reference clips yet — drop a 5–10s .wav into ~/.audiobooktts/voices/ to clone a voice.";
 }
 
-$("engine").onchange = async () => {
-  if (previewActive()) stopPreview();
-  await loadVoices($("engine").value);
-  // Voice ids are engine-specific, so per-chapter picks cannot carry over.
-  chapterVoices = {};
-  updateVoiceSummary();
-  if (book) renderChapters();
-};
 
 (async () => {
   const c = await fetch("/api/config").then(r => r.json());
-  $("engine").value = c.engine;
-  await loadVoices(c.engine, c.voice);
+  await loadVoices(ENGINE, c.voice);
   $("speed").value = c.speed;
   $("speedVal").textContent = (+c.speed).toFixed(2) + "×";
   $("outDir").value = c.output_dir;
@@ -406,7 +534,7 @@ $("previewBtn").onclick = async () => {
     const url = `/api/preview?path=${encodeURIComponent(book.path)}` +
       `&voice=${chapterVoices[previewChapter] || $("voice").value}` +
       `&speed=${$("speed").value}` +
-      `&engine=${$("engine").value}` +
+      `&engine=${ENGINE}` +
       `&chapter=${previewChapter}`;
     const r = await fetch(url, { signal: ac.signal });
     if (!r.ok) throw new Error("preview failed");
@@ -465,8 +593,10 @@ $("pickerBg").onclick = e => {
   if (e.target === $("pickerBg")) $("pickerBg").classList.add("hidden");
 };
 document.addEventListener("keydown", e => {
-  if (e.key === "Escape" && !$("pickerBg").classList.contains("hidden"))
-    $("pickerBg").classList.add("hidden");
+  if (e.key !== "Escape") return;
+  if (!$("pickerBg").classList.contains("hidden")) $("pickerBg").classList.add("hidden");
+  if (!$("voiceBg").classList.contains("hidden")) closeVoicePanel();
+  if (!$("pronBg").classList.contains("hidden")) { pronStop(); $("pronBg").classList.add("hidden"); }
 });
 
 // ---- run ----------------------------------------------------------------
@@ -477,7 +607,7 @@ $("startBtn").onclick = async () => {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       path: book.path, voice: $("voice").value, speed: +$("speed").value,
-      engine: $("engine").value, chapter_voices: chapterVoices,
+      engine: ENGINE, chapter_voices: chapterVoices, cover_path: coverPath,
       output_dir: $("outDir").value || null,
     }),
   });
@@ -538,6 +668,425 @@ function finish() {
 
 $("cancelBtn").onclick = async () => {
   if (currentJob) await fetch(`/api/jobs/${currentJob}/cancel`, { method: "POST" });
+};
+
+// ---- pronunciation ------------------------------------------------------
+// Respellings are guesses until heard. This is the loop for checking one:
+// play the word as written, play a candidate, keep whichever is right.
+let pronAudio = null;
+
+function pronStop() {
+  if (pronAudio) { pronAudio.pause(); pronAudio = null; }
+  $("pHearRaw").textContent = "▶ As written";
+  $("pHearTry").textContent = "▶ As respelled";
+}
+
+function pStatus(msg, isError) {
+  $("pStatus").innerHTML = msg
+    ? `<span class="${isError ? "err" : "ok"}">${escapeHtml(msg)}</span>` : "";
+}
+
+async function pronPlay(word, sayAs, btn, label) {
+  if (pronAudio) { pronStop(); return; }
+  if (!word) { pStatus("Type the word first.", true); return; }
+  const voice = $("voice").value;
+  const url = `/api/pronunciation/try?word=${encodeURIComponent(word)}` +
+    `&say_as=${encodeURIComponent(sayAs || "")}&voice=${encodeURIComponent(voice)}`;
+  btn.textContent = "…";
+  pStatus("");
+  try {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error("failed");
+    const blob = await r.blob();
+    pronAudio = new Audio(URL.createObjectURL(blob));
+    pronAudio.onended = pronStop;
+    pronAudio.onerror = pronStop;
+    btn.textContent = "■ Stop";
+    pronAudio.play();
+  } catch (e) {
+    btn.textContent = label;
+    pStatus("Could not synthesise that.", true);
+  }
+}
+
+async function refreshPronRows() {
+  pronStop();
+  const { entries } = await fetch("/api/pronunciation").then(r => r.json());
+  $("pronRows").innerHTML = entries.length ? entries.map(e =>
+    `<div class="pitem">` +
+      `<span class="pw">${escapeHtml(e.word)}</span>` +
+      `<span class="ps">${escapeHtml(e.say_as)}</span>` +
+      `<button class="ghost" style="padding:.15rem .5rem;font-size:.75rem" onclick="pronEdit('${escapeHtml(e.word)}')">Edit</button>` +
+      `<button class="ghost" style="padding:.15rem .5rem;font-size:.75rem" onclick="pronDelete('${escapeHtml(e.word)}')">Remove</button>` +
+    `</div>`).join("")
+    : `<div class="pitem" style="color:var(--muted)">Nothing added yet.</div>`;
+}
+
+function pronEdit(word) {
+  const row = [...document.querySelectorAll("#pronRows .pitem")]
+    .find(r => r.querySelector(".pw")?.textContent === word);
+  $("pWord").value = word;
+  $("pSay").value = row ? row.querySelector(".ps").textContent : "";
+  pStatus("Loaded — hear it, adjust, then Save.");
+}
+
+async function pronDelete(word) {
+  await fetch(`/api/pronunciation/${encodeURIComponent(word)}`, { method: "DELETE" });
+  await refreshPronRows();
+  pStatus(`Removed ${word}. It will be read as written.`);
+}
+
+$("managePron").onclick = async () => {
+  await refreshPronRows();
+  $("pronBg").classList.remove("hidden");
+};
+$("pronClose").onclick = () => { pronStop(); $("pronBg").classList.add("hidden"); };
+$("pronBg").onclick = e => {
+  if (e.target === $("pronBg")) { pronStop(); $("pronBg").classList.add("hidden"); }
+};
+
+$("pHearRaw").onclick = () =>
+  pronPlay($("pWord").value.trim(), "", $("pHearRaw"), "▶ As written");
+$("pHearTry").onclick = () =>
+  pronPlay($("pWord").value.trim(), $("pSay").value.trim(), $("pHearTry"), "▶ As respelled");
+
+$("pSave").onclick = async () => {
+  const word = $("pWord").value.trim(), say_as = $("pSay").value.trim();
+  if (!word || !say_as) { pStatus("Both fields are needed.", true); return; }
+  const r = await fetch("/api/pronunciation", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ word, say_as }),
+  });
+  if (!r.ok) { pStatus("Could not save.", true); return; }
+  await refreshPronRows();
+  pStatus(`${word} will be said as "${say_as}".`);
+};
+
+$("pSuggest").onclick = async () => {
+  if (!book) { pStatus("Load a book first.", true); return; }
+  pStatus("Scanning…");
+  const r = await fetch(`/api/pronunciation/suggest?path=${encodeURIComponent(book.path)}`);
+  if (!r.ok) { pStatus("Could not scan the book.", true); return; }
+  const { words } = await r.json();
+  if (!words.length) { pStatus("No unusual names left to check."); return; }
+  $("pronRows").innerHTML =
+    `<div class="pitem" style="color:var(--muted)">Names in this book, most frequent first — click one to work on it.</div>` +
+    words.map(w =>
+      `<div class="pitem">` +
+        `<span class="pw">${escapeHtml(w.word)}</span>` +
+        `<span class="ps">appears ${w.count}×</span>` +
+        `<button class="ghost" style="padding:.15rem .5rem;font-size:.75rem" onclick="pronPick('${escapeHtml(w.word)}')">Work on it</button>` +
+      `</div>`).join("");
+  pStatus(`${words.length} names the dictionary doesn't know.`);
+};
+
+function pronPick(word) {
+  $("pWord").value = word;
+  $("pSay").value = "";
+  pStatus(`Hear "${word}" as written, then try a respelling.`);
+}
+
+// ---- voice manager ------------------------------------------------------
+async function refreshVoiceRows() {
+  stopVoicePanelAudio();
+  const { voices, windows } = await fetch("/api/voice-library").then(r => r.json());
+  if (windows) {
+    // The start of a clip is what fixes voice identity, so say so.
+    $("vHint").textContent =
+      `` +
+      `This model reads only the first ${windows.speaker_s}s for the voice ` +
+      `itself and ${windows.decoder_s}s in total — anything beyond that is ` +
+      `discarded, so pick a passage that is representative from its first words.`;
+  }
+  $("voiceRows").innerHTML = voices.length ? voices.map(v => {
+    const pace = v.wpm ? `${v.wpm} wpm` : "not yet measured";
+    return `<div class="vitem">` +
+      `<span class="vname">${escapeHtml(v.name)}</span>` +
+      `<span class="vmeta">${v.seconds}s · ${pace}</span>` +
+      `<button class="ghost vplay" style="padding:.2rem .5rem;font-size:.75rem" data-v="${escapeHtml(v.name)}" onclick="playVoice('${v.name}')">▶</button>` +
+      `<button class="ghost" style="padding:.2rem .5rem;font-size:.75rem" onclick="editVoice('${v.name}')">Edit clip</button>` +
+      `<button class="ghost" style="padding:.2rem .5rem;font-size:.75rem" onclick="recalibrate('${v.name}')">Recalibrate</button>` +
+      `<button class="ghost" style="padding:.2rem .5rem;font-size:.75rem" onclick="removeVoice('${v.name}')">Delete</button>` +
+    `</div>`;
+  }).join("") : `<div class="vitem" style="color:var(--muted)">No voices yet — add one below.</div>`;
+}
+
+let voiceAudio = null;
+
+function stopVoicePanelAudio() {
+  // Both the row auditions and the waveform selection play from this panel;
+  // dismissing it must not leave either of them running.
+  if (voiceAudio) { voiceAudio.pause(); voiceAudio = null; }
+  if (typeof weStopAudio === "function") weStopAudio();
+  document.querySelectorAll("#voiceRows .vplay").forEach(b => (b.textContent = "▶"));
+}
+
+function closeVoicePanel() {
+  stopVoicePanelAudio();
+  $("voiceBg").classList.add("hidden");
+}
+
+function playVoice(name) {
+  const btn = document.querySelector(`#voiceRows .vplay[data-v="${name}"]`);
+  const wasPlaying = voiceAudio && voiceAudio.dataset && voiceAudio.dataset.name === name;
+  stopVoicePanelAudio();
+  if (wasPlaying) return;          // second press stops
+  voiceAudio = new Audio(`/api/voice-library/${encodeURIComponent(name)}/audio`);
+  voiceAudio.dataset = { name };
+  voiceAudio.onended = stopVoicePanelAudio;
+  voiceAudio.onerror = stopVoicePanelAudio;
+  if (btn) btn.textContent = "■";
+  voiceAudio.play();
+}
+
+async function recalibrate(name) {
+  vStatus(`Measuring ${name}… this takes a moment.`);
+  const r = await fetch(`/api/voice-library/${encodeURIComponent(name)}/recalibrate`, { method: "POST" });
+  vStatus(r.ok ? `${name} remeasured.` : "Could not measure that voice.", !r.ok);
+  refreshVoiceRows();
+}
+
+async function removeVoice(name) {
+  if (!confirm(`Delete the voice "${name}"?`)) return;
+  await fetch(`/api/voice-library/${encodeURIComponent(name)}`, { method: "DELETE" });
+  await refreshVoiceRows();
+  await loadVoices(ENGINE);
+  if (book) renderChapters();
+}
+
+function vStatus(msg, isError) {
+  $("vStatus").innerHTML = msg
+    ? `<span class="${isError ? "err" : "ok"}">${escapeHtml(msg)}</span>` : "";
+}
+
+$("manageVoices").onclick = async () => {
+  await refreshVoiceRows();
+  $("voiceBg").classList.remove("hidden");
+};
+$("voiceClose").onclick = closeVoicePanel;
+$("voiceBg").onclick = e => { if (e.target === $("voiceBg")) closeVoicePanel(); };
+
+$("vAdd").onclick = async () => {
+  const f = $("vFile").files[0];
+  const name = $("vName").value.trim();
+  if (!f || !name) { vStatus("Pick a recording and give it a name.", true); return; }
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("name", name);
+  $("vAdd").disabled = true;
+  vStatus("Reading the recording…");
+  // Store the whole recording first and open the editor, so the clip is chosen
+  // by ear rather than by guessing at a start time.
+  const r = await fetch("/api/voice-source", { method: "POST", body: fd });
+  $("vAdd").disabled = false;
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({ detail: "Failed" }));
+    vStatus(e.detail, true);
+    return;
+  }
+  const data = await r.json();
+  vStatus("");
+  $("vName").value = "";
+  $("vFile").value = "";
+  weOpen(data.name, data);
+};
+
+// ---- waveform clip editor ----------------------------------------------
+// Which 15 seconds you pick matters more than the length: the model reads
+// only the start of a clip to fix voice identity.
+const we = { name: "", duration: 0, peaks: [], start: 45, len: 15, drag: null };
+let weAudio = null;
+
+function weStopAudio() {
+  if (weAudio) { weAudio.pause(); weAudio = null; }
+  $("wePlay").textContent = "▶ Hear selection";
+}
+
+function weDraw() {
+  const c = $("weCanvas");
+  const dpr = window.devicePixelRatio || 1;
+  const w = c.clientWidth, h = c.clientHeight;
+  if (c.width !== w * dpr) { c.width = w * dpr; c.height = h * dpr; }
+  const g = c.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const accent = css.getPropertyValue("--accent").trim() || "#4f46e5";
+  const muted = css.getPropertyValue("--muted").trim() || "#888";
+
+  // selection band behind the trace
+  const x0 = (we.start / we.duration) * w;
+  const x1 = ((we.start + we.len) / we.duration) * w;
+  g.fillStyle = accent + "33";
+  g.fillRect(x0, 0, Math.max(2, x1 - x0), h);
+  g.strokeStyle = accent;
+  g.lineWidth = 2;
+  g.beginPath(); g.moveTo(x0, 0); g.lineTo(x0, h); g.stroke();
+  g.beginPath(); g.moveTo(x1, 0); g.lineTo(x1, h); g.stroke();
+
+  // waveform
+  const mid = h / 2, n = we.peaks.length;
+  g.strokeStyle = muted;
+  g.lineWidth = 1;
+  g.beginPath();
+  for (let i = 0; i < n; i++) {
+    const x = (i / (n - 1)) * w;
+    const a = we.peaks[i] * (h / 2 - 4);
+    g.moveTo(x, mid - a); g.lineTo(x, mid + a);
+  }
+  g.stroke();
+
+  $("weRange").textContent =
+    `${we.start.toFixed(1)}s – ${(we.start + we.len).toFixed(1)}s of ${we.duration.toFixed(0)}s`;
+  $("weStart").value = we.start.toFixed(1);
+  $("weDur").value = we.len.toFixed(1);
+}
+
+function weClamp() {
+  we.len = Math.max(6, Math.min(30, we.len, we.duration));
+  we.start = Math.max(0, Math.min(we.start, we.duration - we.len));
+}
+
+function weOpen(name, data) {
+  we.name = name;
+  we.duration = data.duration;
+  we.peaks = data.peaks;
+  we.len = Math.min(15, data.duration);
+  we.start = Math.min(45, Math.max(0, data.duration - we.len));
+  weClamp();
+  $("weName").textContent = name;
+  $("weStatus").innerHTML = "";
+  $("voiceAdd").classList.add("hidden");
+  $("voiceRows").classList.add("hidden");
+  $("waveEditor").classList.remove("hidden");
+  // The canvas measures 0 wide while the panel is hidden, so draw once now and
+  // again as soon as it has a real size. A rAF alone is not enough: it never
+  // fires while the tab is in the background.
+  weDraw();
+  weWatchSize();
+}
+
+let weObserver = null;
+function weWatchSize() {
+  if (weObserver) return;
+  const c = $("weCanvas");
+  if (typeof ResizeObserver === "undefined") {
+    setTimeout(weDraw, 50);
+    return;
+  }
+  weObserver = new ResizeObserver(() => {
+    if (c.clientWidth > 0 && !$("waveEditor").classList.contains("hidden")) weDraw();
+  });
+  weObserver.observe(c);
+}
+
+function weClose() {
+  weStopAudio();
+  $("waveEditor").classList.add("hidden");
+  $("voiceAdd").classList.remove("hidden");
+  $("voiceRows").classList.remove("hidden");
+}
+
+async function editVoice(name) {
+  $("vStatus").innerHTML = "";
+  const r = await fetch(`/api/voice-source/${encodeURIComponent(name)}/peaks`);
+  if (!r.ok) {
+    vStatus("No stored recording for this voice — add it again from the file below.", true);
+    return;
+  }
+  weOpen(name, await r.json());
+}
+
+// --- dragging ---
+function weXToTime(e) {
+  const rect = $("weCanvas").getBoundingClientRect();
+  const x = Math.max(0, Math.min(e.clientX - rect.left, rect.width));
+  return (x / rect.width) * we.duration;
+}
+
+$("weCanvas").onpointerdown = e => {
+  const t = weXToTime(e);
+  const edge = we.duration * 0.012;   // grab tolerance
+  if (Math.abs(t - we.start) < edge) we.drag = "left";
+  else if (Math.abs(t - (we.start + we.len)) < edge) we.drag = "right";
+  else if (t > we.start && t < we.start + we.len) we.drag = { move: t - we.start };
+  else { we.start = t - we.len / 2; weClamp(); weDraw(); we.drag = { move: we.len / 2 }; }
+  $("weCanvas").setPointerCapture(e.pointerId);
+};
+
+$("weCanvas").onpointermove = e => {
+  if (!we.drag) return;
+  const t = weXToTime(e);
+  if (we.drag === "left") { const end = we.start + we.len; we.start = t; we.len = end - t; }
+  else if (we.drag === "right") { we.len = t - we.start; }
+  else { we.start = t - we.drag.move; }
+  weClamp();
+  weDraw();
+};
+
+$("weCanvas").onpointerup = e => {
+  if (we.drag) { we.drag = null; weStopAudio(); }
+  try { $("weCanvas").releasePointerCapture(e.pointerId); } catch (_) {}
+};
+
+$("weStart").onchange = () => { we.start = +$("weStart").value || 0; weClamp(); weDraw(); weStopAudio(); };
+$("weDur").onchange = () => { we.len = +$("weDur").value || 15; weClamp(); weDraw(); weStopAudio(); };
+
+$("wePlay").onclick = () => {
+  if (weAudio) { weStopAudio(); return; }
+  const url = `/api/voice-source/${encodeURIComponent(we.name)}/segment` +
+    `?start=${we.start.toFixed(2)}&duration=${we.len.toFixed(2)}`;
+  weAudio = new Audio(url);
+  weAudio.onended = weStopAudio;
+  weAudio.onerror = weStopAudio;
+  $("wePlay").textContent = "■ Stop";
+  weAudio.play();
+};
+
+$("weSave").onclick = async () => {
+  $("weSave").disabled = true;
+  $("weStatus").innerHTML = "Cutting and normalising…";
+  const r = await fetch(`/api/voice-library/${encodeURIComponent(we.name)}/recut`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ start: we.start, duration: we.len }),
+  });
+  $("weSave").disabled = false;
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({ detail: "Failed" }));
+    $("weStatus").innerHTML = `<span class="err">${escapeHtml(e.detail)}</span>`;
+    return;
+  }
+  $("weStatus").innerHTML = `<span class="ok">Saved. Its pace will be remeasured on first use.</span>`;
+  await refreshVoiceRows();
+  await loadVoices(ENGINE, we.name);
+  if (book) renderChapters();
+};
+
+$("weCancel").onclick = weClose;
+window.addEventListener("resize", () => { if (!$("waveEditor").classList.contains("hidden")) weDraw(); });
+
+// ---- cover --------------------------------------------------------------
+$("coverBtn").onclick = () => $("coverFile").click();
+$("coverFile").onchange = async () => {
+  const f = $("coverFile").files[0];
+  if (!f) return;
+  const fd = new FormData();
+  fd.append("file", f);
+  const r = await fetch("/api/cover", { method: "POST", body: fd });
+  if (!r.ok) { $("coverName").textContent = "Could not read that image."; return; }
+  const d = await r.json();
+  coverPath = d.path;
+  $("coverPreview").src = "/api/cover-file?path=" + encodeURIComponent(coverPath) + "&t=" + Date.now();
+  $("coverPreview").classList.remove("hidden");
+  $("coverName").textContent = f.name;
+  $("coverClear").classList.remove("hidden");
+};
+$("coverClear").onclick = () => {
+  coverPath = "";
+  $("coverPreview").classList.add("hidden");
+  $("coverClear").classList.add("hidden");
+  $("coverName").textContent = "";
+  $("coverFile").value = "";
 };
 
 // ---- jobs list ----------------------------------------------------------

@@ -17,7 +17,11 @@ import numpy as np
 
 from audiobooktts.engines.base import TTSEngine, Voice
 
-ENGINE_NAMES = ("kokoro", "chatterbox")
+# Larger cloning models, for voices Chatterbox struggles with.
+BIG_MODELS = {
+    "higgs": "mlx-community/higgs-audio-v2-3B-mlx-q8",
+}
+ENGINE_NAMES = ("chatterbox", *BIG_MODELS)
 
 _ENGINES: dict[str, TTSEngine] = {}
 _LOCK = threading.Lock()
@@ -60,20 +64,20 @@ class _SerializedEngine(TTSEngine):
 
 
 def _build(name: str) -> TTSEngine:
-    if name == "kokoro":
-        from audiobooktts.engines.kokoro import KokoroEngine
-
-        return KokoroEngine()
     if name == "chatterbox":
         from audiobooktts.engines.chatterbox import ChatterboxEngine
 
         return ChatterboxEngine()
+    if name in BIG_MODELS:
+        from audiobooktts.engines.generic_clone import GenericCloneEngine
+
+        return GenericCloneEngine(name, BIG_MODELS[name])
     raise ValueError(
         f"Unknown TTS engine: {name!r} (available: {', '.join(ENGINE_NAMES)})"
     )
 
 
-def get_engine(name: str = "kokoro") -> TTSEngine:
+def get_engine(name: str = "chatterbox") -> TTSEngine:
     with _LOCK:
         if name not in _ENGINES:
             _ENGINES[name] = _SerializedEngine(_build(name))

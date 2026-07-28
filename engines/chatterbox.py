@@ -19,6 +19,10 @@ import numpy as np
 from audiobooktts.config import APP_DIR
 from audiobooktts.engines.base import TTSEngine, Voice
 
+# The distilled "turbo" model. The full base model clones a voice more
+# closely, but it overruns badly — it produced 154s of audio from 411
+# characters, where turbo gives about 30s — making previews unusably slow.
+# Switch with chatterbox_model in ~/.audiobooktts/config.json.
 MODEL_ID = "mlx-community/chatterbox-turbo-8bit"
 VOICES_DIR = APP_DIR / "voices"
 _AUDIO_SUFFIXES = {".wav", ".mp3", ".flac", ".m4a", ".ogg"}
@@ -32,11 +36,16 @@ class ChatterboxEngine(TTSEngine):
     sample_rate = 24000  # corrected from the model once loaded
     deterministic = False  # autoregressive: pace wanders between runs
 
-    def __init__(self, model_id: str = MODEL_ID):
+    def __init__(self, model_id: str | None = None):
+        if model_id is None:
+            from audiobooktts.config import Config
+
+            model_id = getattr(Config.load(), "chatterbox_model", MODEL_ID)
         self.model_id = model_id
         self._model = None
         self._prepared_voice: str | None = None
         self._builtin_conds = None
+        self._conds = None
 
     def _ensure_model(self):
         if self._model is None:
@@ -79,6 +88,31 @@ class ChatterboxEngine(TTSEngine):
                     )
         return voices
 
+    @staticmethod
+    def _prepare(model, ref: Path):
+        """Derive the voice conditioning, across both Chatterbox variants.
+
+        The turbo model takes a path and stores the result on itself. The base
+        model wants samples plus a rate and *returns* the conditioning — ignore
+        the return value and generation silently falls back to the model's own
+        built-in voice, which is a different person entirely.
+        """
+        import inspect
+
+        if "ref_sr" in inspect.signature(model.prepare_conditionals).parameters:
+            import mlx.core as mx
+            import soundfile as sf
+
+            wav, rate = sf.read(str(ref), dtype="float32")
+            conds = model.prepare_conditionals(
+                mx.array(np.asarray(wav).reshape(-1)), rate
+            )
+            if conds is not None:
+                model._conds = conds
+            return conds
+        model.prepare_conditionals(str(ref))
+        return getattr(model, "_conds", None)
+
     # --- synthesis ----------------------------------------------------------
 
     def synthesize(self, text: str, voice: str, speed: float = 1.0) -> np.ndarray:
@@ -92,7 +126,7 @@ class ChatterboxEngine(TTSEngine):
         # then generate against the cached conditionals.
         ref = self.reference_path(voice)
         if ref is not None and self._prepared_voice != voice:
-            model.prepare_conditionals(str(ref))
+            self._conds = self._prepare(model, ref)
             self._prepared_voice = voice
 
         if ref is None and self._prepared_voice is not None:
@@ -100,6 +134,13 @@ class ChatterboxEngine(TTSEngine):
             self._prepared_voice = None
 
         kwargs: dict = {"text": text, "verbose": False}
+        # The base model takes the conditioning as an argument; passing it
+        # explicitly guarantees the reference voice is the one used.
+        if ref is not None and self._conds is not None:
+            import inspect
+
+            if "conds" in inspect.signature(model.generate).parameters:
+                kwargs["conds"] = self._conds
         if speed and speed != 1.0:
             kwargs["speed"] = speed
 

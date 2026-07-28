@@ -66,7 +66,11 @@ def package_m4b(
         meta_file.write_text(_ffmetadata(manifest, book))
 
         cover_file = None
-        if book.cover:
+        custom = getattr(manifest, "cover_path", "")
+        if custom and Path(custom).is_file():
+            cover_file = tdp / f"cover{Path(custom).suffix.lower()}"
+            cover_file.write_bytes(Path(custom).read_bytes())
+        elif book.cover:
             ext = "png" if (book.cover_media_type or "").endswith("png") else "jpg"
             cover_file = tdp / f"cover.{ext}"
             cover_file.write_bytes(book.cover)
@@ -81,7 +85,8 @@ def package_m4b(
         cmd += ["-map_metadata", "1", "-map", "0:a"]
         if cover_file:
             cmd += [
-                "-map", "2:v", "-c:v", "mjpeg" if cover_file.suffix == ".jpg" else "png",
+                "-map", "2:v",
+                "-c:v", "png" if cover_file.suffix == ".png" else "mjpeg",
                 "-disposition:v", "attached_pic",
             ]
         if master:

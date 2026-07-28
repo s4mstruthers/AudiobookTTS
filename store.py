@@ -43,6 +43,8 @@ class Manifest:
     # place the job was created with, not whatever the current config says.
     output_dir: str = ""
     output_path: str = ""
+    # A custom cover image, used instead of the epub's own when set.
+    cover_path: str = ""
     chapters: list[ChapterState] = field(default_factory=list)
 
     def to_dict(self) -> dict:

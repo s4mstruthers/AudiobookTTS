@@ -113,7 +113,13 @@ def normalize_caps(text: str, min_len: int = MIN_CAPS_WORD) -> str:
     return "".join(pieces)
 
 
-def clean_text(text: str) -> str:
+def clean_text(text: str, respell: bool = True) -> str:
+    """Normalise for narration.
+
+    respell=False keeps the book's own spelling, for anything shown on screen:
+    the pronunciation lexicon rewrites "Inge" to "Inga" for the engine's
+    benefit, which is alarming to read back as if the text had changed.
+    """
     # Drop citation/footnote markers like [12] or [note 3]
     text = re.sub(r"\[\s*(?:note\s*)?\d+\s*\]", "", text, flags=re.IGNORECASE)
     # Normalize unicode punctuation that some TTS front-ends mangle
@@ -132,9 +138,10 @@ def clean_text(text: str) -> str:
     text = expand_numbers(text)
     # Respell names the engines mispronounce. Applied here so the preview and
     # the render — which share this function — can never disagree.
-    from audiobooktts import pronunciation
+    if respell:
+        from audiobooktts import pronunciation
 
-    text = pronunciation.apply(text)
+        text = pronunciation.apply(text)
     # Collapse whitespace, keeping paragraph breaks but removing newlines from
     # *within* a paragraph. Many epubs are hard-wrapped mid-sentence, and Kokoro
     # splits its input on newlines and renders each fragment as its own
@@ -174,7 +181,7 @@ CLAUSE, SENTENCE, PARAGRAPH = "clause", "sentence", "paragraph"
 
 
 def chunk_paragraphs(
-    text: str, max_chars: int = MAX_CHUNK_CHARS
+    text: str, max_chars: int = MAX_CHUNK_CHARS, unit: str = "paragraph"
 ) -> list[tuple[str, str]]:
     """Split into (chunk, break_kind) pairs, one sentence per chunk.
 
@@ -187,6 +194,40 @@ def chunk_paragraphs(
     in half to the ear.
     """
     out: list[list] = []
+
+    if unit == "paragraph":
+        # A paragraph read in one go keeps its own flow; sentences generated
+        # separately start cold and sound disconnected. Long paragraphs are
+        # still broken up, because the engine destabilises past roughly 450
+        # characters — at 900 it collapsed to a third of the expected length.
+        for paragraph in text.split("\n\n"):
+            paragraph = paragraph.strip()
+            if not paragraph:
+                continue
+            group = ""
+            for sentence in split_sentences(paragraph):
+                if group and len(group) + len(sentence) + 1 > max_chars:
+                    out.append([group.strip(), SENTENCE])
+                    group = sentence
+                elif len(sentence) > max_chars:
+                    if group:
+                        out.append([group.strip(), SENTENCE])
+                        group = ""
+                    piece = ""
+                    for clause in re.split(r"(?<=[,;:])\s+", sentence):
+                        if piece and len(piece) + len(clause) + 1 > max_chars:
+                            out.append([piece.strip(), CLAUSE])
+                            piece = clause
+                        else:
+                            piece = f"{piece} {clause}".strip()
+                    group = piece
+                else:
+                    group = f"{group} {sentence}".strip()
+            if group.strip():
+                out.append([group.strip(), SENTENCE])
+            if out:
+                out[-1][1] = PARAGRAPH
+        return [(t, k) for t, k in out]
 
     for paragraph in text.split("\n\n"):
         paragraph = paragraph.strip()
@@ -225,14 +266,16 @@ def preview_sample(text: str, max_chars: int = 500) -> str:
 
 
 def preview_chunks(
-    text: str, max_chars: int = 500
-) -> list[tuple[str, bool]]:
+    text: str, max_chars: int = 500, unit: str = "paragraph"
+) -> list[tuple[str, str]]:
     """The chunks a preview covers, so it can render exactly like the real run."""
     picked: list[tuple[str, bool]] = []
     total = 0
     # Chunk to the sample budget, not the synthesis budget, or a single 450-char
     # chunk would blow past a smaller max_chars.
-    for chunk, ends in chunk_paragraphs(text, max_chars=min(MAX_CHUNK_CHARS, max_chars)):
+    for chunk, ends in chunk_paragraphs(
+        text, max_chars=min(MAX_CHUNK_CHARS, max_chars), unit=unit
+    ):
         if picked and total + len(chunk) + 1 > max_chars:
             break
         picked.append((chunk, ends))

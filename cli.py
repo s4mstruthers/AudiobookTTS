@@ -94,7 +94,7 @@ def cmd_resume(args):
 def cmd_voices(args):
     from audiobooktts.engines import get_engine
 
-    engine = get_engine(args.engine or "kokoro")
+    engine = get_engine(args.engine or "chatterbox")
     table = Table(title=f"{engine.name} voices")
     table.add_column("id", style="cyan")
     table.add_column("accent")

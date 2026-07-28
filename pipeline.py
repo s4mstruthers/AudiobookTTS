@@ -27,18 +27,22 @@ from audiobooktts.textproc import (
     chunk_paragraphs,
     clean_text,
     normalize_chapter_title,
+    split_sentences,
 )
 
 # Fallback pause lengths; Config overrides these. The engine pads each
 # utterance with ~0.3s leading and ~0.5s trailing silence, which is trimmed
 # off, so these values alone set the pacing.
-GAP_CLAUSE_S = 0.2      # mid-sentence, where a long sentence had to be split
-GAP_SENTENCE_S = 0.65   # after a full stop
-GAP_PARAGRAPH_S = 1.1   # between paragraphs
-GAP_TITLE_S = 1.8       # after the announced chapter title
+GAP_CLAUSE_S = 0.25     # mid-sentence, where a long sentence had to be split
+GAP_SENTENCE_S = 0.3    # only at a join within a split paragraph
+GAP_PARAGRAPH_S = 1.9   # between paragraphs
+GAP_TITLE_S = 2.6       # after the announced chapter title
 
 _SILENCE_THRESHOLD = 0.01
-_SILENCE_KEEP_S = 0.03
+# Keep a good slice of the natural decay either side. Trimming hard against the
+# speech and splicing in pure digital silence is what makes narration sound
+# breathless — the voice stops dead instead of releasing.
+_SILENCE_KEEP_S = 0.14
 
 
 def _trim_silence(audio: np.ndarray, sample_rate: int) -> np.ndarray:
@@ -52,6 +56,61 @@ def _trim_silence(audio: np.ndarray, sample_rate: int) -> np.ndarray:
     start = max(0, int(loud[0]) - keep)
     end = min(audio.size, int(loud[-1]) + keep)
     return audio[start:end]
+
+
+# The engine leaves roughly 0.13s between sentences inside one utterance, and
+# less than that at commas. Anything at or above this is treated as a sentence
+# break worth lengthening; shorter dips are left alone.
+_INTERNAL_PAUSE_MIN_S = 0.09
+
+
+def stretch_internal_pauses(
+    audio: np.ndarray, sample_rate: int, target_s: float, max_gaps: int
+) -> np.ndarray:
+    """Lengthen the gaps the engine placed between sentences — those only.
+
+    Reading a paragraph in one call keeps its natural flow, but the engine's
+    own sentence gaps are far too brisk for narration and cannot be
+    configured. The silences are therefore found and padded afterwards.
+
+    max_gaps is what makes this safe. Speech is full of quiet moments — soft
+    consonants, breaths, the dip between words — and padding those produces
+    audio that seems to cut out mid-phrase: one paragraph of two sentences
+    offered fifteen candidate silences. Only the max_gaps longest are
+    stretched, because a full stop is held longer than anything inside a
+    sentence, so with one gap per full stop the rest are left alone.
+    """
+    if audio.size == 0 or target_s <= 0 or max_gaps <= 0:
+        return audio
+    quiet = np.abs(audio) <= _SILENCE_THRESHOLD
+    if not quiet.any():
+        return audio
+
+    # Runs of silence, as (start, end) index pairs.
+    edges = np.flatnonzero(np.diff(quiet.astype(np.int8)))
+    bounds = np.concatenate(([0], edges + 1, [audio.size]))
+    min_len = int(sample_rate * _INTERNAL_PAUSE_MIN_S)
+    target_len = int(sample_rate * target_s)
+
+    runs = [
+        (start, end)
+        for start, end in zip(bounds[:-1], bounds[1:])
+        if quiet[start] and start > 0 and end < audio.size
+        and (end - start) >= min_len
+    ]
+    # The longest silences are the sentence ends.
+    chosen = {
+        start for start, _ in
+        sorted(runs, key=lambda r: r[1] - r[0], reverse=True)[:max_gaps]
+    }
+
+    pieces: list[np.ndarray] = []
+    for start, end in zip(bounds[:-1], bounds[1:]):
+        segment = audio[start:end]
+        pieces.append(segment)
+        if start in chosen and target_len > segment.size:
+            pieces.append(np.zeros(target_len - segment.size, dtype=np.float32))
+    return np.concatenate(pieces) if pieces else audio
 
 
 def render_chunks(
@@ -83,11 +142,10 @@ def render_chunks(
     from audiobooktts.mastering import apply_filters, atempo_chain
     from audiobooktts.pacing import tempo_for
 
+    # Chatterbox has no speed parameter, so both the user's speed and the pace
+    # correction are applied as one time-stretch.
     tempo = tempo_for(engine, voice, getattr(cfg, "target_wpm", 0.0), speed)
-    # Kokoro honours speed natively; let it, and leave the stretch to pacing.
-    native_speed = speed if engine.name == "kokoro" else 1.0
-    if engine.name == "kokoro" and tempo != 1.0:
-        tempo /= speed or 1.0
+    native_speed = 1.0
 
     pieces: list[np.ndarray] = []
     for j, (chunk, kind) in enumerate(chunks):
@@ -96,6 +154,15 @@ def render_chunks(
         audio = _trim_silence(engine.synthesize(chunk, voice, native_speed), sr)
         if not audio.size:
             continue
+        # Only when asked: the engine's own spacing between sentences reads
+        # naturally, and overriding it makes the narration laboured.
+        if (
+            getattr(cfg, "stretch_sentence_pauses", False)
+            and getattr(cfg, "synthesis_unit", "paragraph") == "paragraph"
+        ):
+            audio = stretch_internal_pauses(
+                audio, sr, gaps[SENTENCE], max_gaps=len(split_sentences(chunk)) - 1
+            )
         pieces.append(audio)
         gap = g_title if (j == 0 and announces_title) else gaps.get(kind, gaps[SENTENCE])
         pieces.append(np.zeros(int(sr * gap), dtype=np.float32))
@@ -200,7 +267,9 @@ def run_job(
             text = clean_text(chapter.text)
             # Announce the chapter title before its body
             title = normalize_chapter_title(chapter.title)
-            chunks = chunk_paragraphs(text)
+            chunks = chunk_paragraphs(
+                text, unit=getattr(config, "synthesis_unit", "paragraph")
+            )
             if title:
                 chunks = [(title + ".", PARAGRAPH)] + chunks
             state.n_chunks = len(chunks)

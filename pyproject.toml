@@ -71,6 +71,8 @@ filterwarnings = [
     "ignore::DeprecationWarning:ebooklib.*",
     "ignore::FutureWarning:ebooklib.*",
     "ignore::UserWarning:ebooklib.*",
+    # epub.py silences this globally at import; pytest resets filters per test.
+    "ignore::bs4.XMLParsedAsHTMLWarning",
 ]
 
 [tool.ruff]

@@ -66,6 +66,7 @@
   /* Fixed width so toggling between "Preview" and "Stop" doesn't shift the row */
   #previewBtn { min-width: 6.5rem; }
   button.big { width: 100%; padding: .7rem; font-size: 1rem; margin-top: .3rem; }
+  button.mini { padding: .2rem .55rem; font-size: .76rem; }
   .chaps { max-height: 190px; overflow-y: auto; border: 1px solid var(--border); border-radius: 7px; }
   .chaps .chaprow {
     display: flex; align-items: center; gap: .6rem;
@@ -353,7 +354,18 @@
 <script>
 const $ = id => document.getElementById(id);
 const ENGINE = "chatterbox";
-let coverPath = "";
+let coverId = "";
+
+// The server explains failures in a JSON "detail" field; show that, not a
+// generic message, so problems such as a missing backend are actionable.
+async function errorDetail(r, fallback) {
+  try {
+    const body = await r.json();
+    if (typeof body.detail === "string") return body.detail;
+    if (Array.isArray(body.detail) && body.detail[0]?.msg) return body.detail[0].msg;
+  } catch (_) {}
+  return fallback;
+}
 let book = null, currentJob = null, es = null;
 
 // ---- upload -------------------------------------------------------------
@@ -373,8 +385,12 @@ async function upload(f) {
   fd.append("file", f);
   const r = await fetch("/api/upload", { method: "POST", body: fd });
   if (!r.ok) {
-    const e = await r.json().catch(() => ({ detail: "Upload failed" }));
-    drop.querySelector("strong").innerHTML = '<span class="err">' + e.detail + "</span>";
+    const strong = drop.querySelector("strong");
+    strong.textContent = "";
+    const span = document.createElement("span");
+    span.className = "err";
+    span.textContent = await errorDetail(r, "Upload failed");
+    strong.appendChild(span);
     return;
   }
   book = await r.json();
@@ -472,23 +488,22 @@ $("speed").oninput = e => {
 };
 
 async function loadVoices(engine, preferred) {
-  const v = await fetch(`/api/voices?engine=${engine}`).then(r => r.json());
-  // Group by accent and show the model's quality grade — the D-tier voices
-  // sound noticeably rougher over a whole book.
-  const groups = {};
-  v.voices.forEach(x => (groups[x.language] = groups[x.language] || []).push(x));
-  const groupName = { "en-GB": "British", "en-US": "American", "en": "Voices" };
-  $("voice").innerHTML = Object.entries(groups).map(([lang, list]) =>
-    `<optgroup label="${groupName[lang] || lang}">` +
-    list.map(x => `<option value="${x.id}">${escapeHtml(x.label)}` +
-      `${x.grade && x.grade !== "clone" ? "  [" + x.grade + "]" : ""}</option>`).join("") +
+  preferred = preferred ?? $("voice").value;
+  const v = await fetch(`/api/voices?engine=${encodeURIComponent(engine)}`).then(r => r.json());
+  // Cloned voices first, then the model's own.
+  const groups = { clone: [], builtin: [] };
+  v.voices.forEach(x => (groups[x.kind] || groups.builtin).push(x));
+  const groupName = { clone: "Your voices", builtin: "Built-in" };
+  $("voice").innerHTML = Object.entries(groups).filter(([, list]) => list.length).map(([kind, list]) =>
+    `<optgroup label="${groupName[kind]}">` +
+    list.map(x => `<option value="${escapeHtml(x.id)}">${escapeHtml(x.label)}</option>`).join("") +
     `</optgroup>`).join("");
   if (preferred && [...$("voice").options].some(o => o.value === preferred))
     $("voice").value = preferred;
-  if (typeof book !== "undefined" && book) renderChapters();
+  if (book) renderChapters();
   if (engine === "chatterbox" && v.voices.length <= 1)
     $("sampleText").textContent =
-      "No reference clips yet — drop a 5–10s .wav into ~/.audiobooktts/voices/ to clone a voice.";
+      "No cloned voices yet — use Voices… to make one from any 15 seconds of clear speech.";
 }
 
 
@@ -530,14 +545,20 @@ $("previewBtn").onclick = async () => {
   btn.textContent = "■ Stop";
   const ac = new AbortController();
   previewAbort = ac;
+  // The first preview of a voice also measures its natural pace, which takes a
+  // while; say so rather than leaving the button apparently stuck.
+  const slowHint = setTimeout(() => {
+    if (previewAbort === ac) $("sampleText").textContent =
+      "Synthesising… the first preview of a voice also measures its pace, which can take a few minutes.";
+  }, 4000);
   try {
     const url = `/api/preview?path=${encodeURIComponent(book.path)}` +
-      `&voice=${chapterVoices[previewChapter] || $("voice").value}` +
+      `&voice=${encodeURIComponent(chapterVoices[previewChapter] || $("voice").value)}` +
       `&speed=${$("speed").value}` +
       `&engine=${ENGINE}` +
       `&chapter=${previewChapter}`;
     const r = await fetch(url, { signal: ac.signal });
-    if (!r.ok) throw new Error("preview failed");
+    if (!r.ok) throw new Error(await errorDetail(r, "Preview failed."));
     let sample = r.headers.get("X-Sample-Text") || "";
     try { sample = decodeURIComponent(sample); } catch (_) {}
     const blob = await r.blob();
@@ -551,8 +572,10 @@ $("previewBtn").onclick = async () => {
     await previewAudio.play();
   } catch (e) {
     if (e.name === "AbortError") return;  // stopPreview already reset the UI
-    $("sampleText").innerHTML = '<span class="err">Preview failed.</span>';
+    $("sampleText").innerHTML = `<span class="err">${escapeHtml(e.message || "Preview failed.")}</span>`;
     stopPreview();
+  } finally {
+    clearTimeout(slowHint);
   }
 };
 
@@ -607,17 +630,20 @@ $("startBtn").onclick = async () => {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       path: book.path, voice: $("voice").value, speed: +$("speed").value,
-      engine: ENGINE, chapter_voices: chapterVoices, cover_path: coverPath,
+      engine: ENGINE, chapter_voices: chapterVoices, cover_id: coverId || null,
       output_dir: $("outDir").value || null,
     }),
   });
-  if (!r.ok) { $("startBtn").disabled = false; return; }
+  if (!r.ok) {
+    $("startBtn").disabled = false;
+    $("progPanel").classList.remove("hidden");
+    $("pStage").innerHTML = '<span class="err">Could not start</span>';
+    $("pResult").innerHTML = `<span class="err">${escapeHtml(await errorDetail(r, "Could not start the job."))}</span>`;
+    return;
+  }
   const { job_id } = await r.json();
-  currentJob = job_id;
-  $("progPanel").classList.remove("hidden");
-  $("pResult").innerHTML = "";
-  $("cancelBtn").classList.remove("hidden");
-  listen(job_id);
+  attach(job_id);
+  refreshJobs();
 };
 
 function listen(jobId) {
@@ -636,6 +662,9 @@ function listen(jobId) {
         `(chunk ${p.chunk_index}/${p.n_chunks})`;
     } else if (p.stage === "parsing") {
       $("pStage").textContent = "Reading epub";
+    } else if (p.stage === "loading" || p.stage === "calibrating") {
+      $("pStage").textContent = p.stage === "loading" ? "Loading the voice model" : "Measuring voice pace";
+      $("pChapter").textContent = p.message || "";
     } else if (p.stage === "packaging") {
       $("pStage").textContent = "Packaging m4b";
       $("pPct").textContent = "99%"; $("pBar").style.width = "99%";
@@ -646,18 +675,26 @@ function listen(jobId) {
       $("pChapter").textContent = "";
       $("cancelBtn").classList.add("hidden");
       $("pResult").innerHTML =
-        `<a href="/api/jobs/${jobId}/download">⬇ Download audiobook</a>` +
+        `<a href="/api/jobs/${encodeURIComponent(jobId)}/download">⬇ Download audiobook</a>` +
         `<div style="color:var(--muted);font-size:.83rem;margin-top:.3rem">${escapeHtml(p.message || "")}</div>`;
       finish();
-    } else if (p.stage === "failed" || p.stage === "cancelled") {
-      $("pStage").innerHTML = `<span class="err">${p.stage === "failed" ? "Failed" : "Cancelled"}</span>`;
+    } else if (["failed", "cancelled", "interrupted"].includes(p.stage)) {
+      const label = { failed: "Failed", cancelled: "Cancelled", interrupted: "Interrupted" }[p.stage];
+      $("pStage").innerHTML = `<span class="err">${label}</span>`;
       $("pChapter").textContent = "";
       $("cancelBtn").classList.add("hidden");
       if (p.message) $("pResult").innerHTML = `<span class="err">${escapeHtml(p.message)}</span>`;
       finish();
     }
   };
-  es.onerror = () => { es.close(); };
+  es.onerror = () => {
+    // The server stopped or the connection dropped; the job list shows the
+    // latest state, and Watch reattaches if the job is still running.
+    es.close();
+    $("pChapter").textContent = "Lost connection to the server.";
+    $("startBtn").disabled = false;
+    refreshJobs();
+  };
 }
 
 function finish() {
@@ -667,7 +704,7 @@ function finish() {
 }
 
 $("cancelBtn").onclick = async () => {
-  if (currentJob) await fetch(`/api/jobs/${currentJob}/cancel`, { method: "POST" });
+  if (currentJob) await fetch(`/api/jobs/${encodeURIComponent(currentJob)}/cancel`, { method: "POST" });
 };
 
 // ---- pronunciation ------------------------------------------------------
@@ -676,7 +713,7 @@ $("cancelBtn").onclick = async () => {
 let pronAudio = null;
 
 function pronStop() {
-  if (pronAudio) { pronAudio.pause(); pronAudio = null; }
+  if (pronAudio) { pronAudio.pause(); URL.revokeObjectURL(pronAudio.src); pronAudio = null; }
   $("pHearRaw").textContent = "▶ As written";
   $("pHearTry").textContent = "▶ As respelled";
 }
@@ -696,7 +733,7 @@ async function pronPlay(word, sayAs, btn, label) {
   pStatus("");
   try {
     const r = await fetch(url);
-    if (!r.ok) throw new Error("failed");
+    if (!r.ok) throw new Error(await errorDetail(r, "Could not synthesise that."));
     const blob = await r.blob();
     pronAudio = new Audio(URL.createObjectURL(blob));
     pronAudio.onended = pronStop;
@@ -705,7 +742,7 @@ async function pronPlay(word, sayAs, btn, label) {
     pronAudio.play();
   } catch (e) {
     btn.textContent = label;
-    pStatus("Could not synthesise that.", true);
+    pStatus(e.message || "Could not synthesise that.", true);
   }
 }
 
@@ -716,8 +753,8 @@ async function refreshPronRows() {
     `<div class="pitem">` +
       `<span class="pw">${escapeHtml(e.word)}</span>` +
       `<span class="ps">${escapeHtml(e.say_as)}</span>` +
-      `<button class="ghost" style="padding:.15rem .5rem;font-size:.75rem" onclick="pronEdit('${escapeHtml(e.word)}')">Edit</button>` +
-      `<button class="ghost" style="padding:.15rem .5rem;font-size:.75rem" onclick="pronDelete('${escapeHtml(e.word)}')">Remove</button>` +
+      `<button class="ghost mini" data-act="pron-edit" data-word="${escapeHtml(e.word)}">Edit</button>` +
+      `<button class="ghost mini" data-act="pron-delete" data-word="${escapeHtml(e.word)}">Remove</button>` +
     `</div>`).join("")
     : `<div class="pitem" style="color:var(--muted)">Nothing added yet.</div>`;
 }
@@ -775,9 +812,20 @@ $("pSuggest").onclick = async () => {
       `<div class="pitem">` +
         `<span class="pw">${escapeHtml(w.word)}</span>` +
         `<span class="ps">appears ${w.count}×</span>` +
-        `<button class="ghost" style="padding:.15rem .5rem;font-size:.75rem" onclick="pronPick('${escapeHtml(w.word)}')">Work on it</button>` +
+        `<button class="ghost mini" data-act="pron-pick" data-word="${escapeHtml(w.word)}">Work on it</button>` +
       `</div>`).join("");
   pStatus(`${words.length} names the dictionary doesn't know.`);
+};
+
+// Row buttons carry the word in a data attribute. Interpolating book text into
+// inline onclick code broke on names such as O'Brien, and could run script.
+$("pronRows").onclick = e => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const word = btn.dataset.word;
+  if (btn.dataset.act === "pron-edit") pronEdit(word);
+  else if (btn.dataset.act === "pron-delete") pronDelete(word);
+  else if (btn.dataset.act === "pron-pick") pronPick(word);
 };
 
 function pronPick(word) {
@@ -800,16 +848,24 @@ async function refreshVoiceRows() {
   }
   $("voiceRows").innerHTML = voices.length ? voices.map(v => {
     const pace = v.wpm ? `${v.wpm} wpm` : "not yet measured";
+    const n = escapeHtml(v.name);
     return `<div class="vitem">` +
-      `<span class="vname">${escapeHtml(v.name)}</span>` +
+      `<span class="vname">${n}</span>` +
       `<span class="vmeta">${v.seconds}s · ${pace}</span>` +
-      `<button class="ghost vplay" style="padding:.2rem .5rem;font-size:.75rem" data-v="${escapeHtml(v.name)}" onclick="playVoice('${v.name}')">▶</button>` +
-      `<button class="ghost" style="padding:.2rem .5rem;font-size:.75rem" onclick="editVoice('${v.name}')">Edit clip</button>` +
-      `<button class="ghost" style="padding:.2rem .5rem;font-size:.75rem" onclick="recalibrate('${v.name}')">Recalibrate</button>` +
-      `<button class="ghost" style="padding:.2rem .5rem;font-size:.75rem" onclick="removeVoice('${v.name}')">Delete</button>` +
+      `<button class="ghost mini vplay" data-act="play" data-v="${n}">▶</button>` +
+      (v.has_source ? `<button class="ghost mini" data-act="edit" data-v="${n}">Edit clip</button>` : "") +
+      `<button class="ghost mini" data-act="recalibrate" data-v="${n}">Recalibrate</button>` +
+      `<button class="ghost mini" data-act="delete" data-v="${n}">Delete</button>` +
     `</div>`;
   }).join("") : `<div class="vitem" style="color:var(--muted)">No voices yet — add one below.</div>`;
 }
+
+$("voiceRows").onclick = e => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  const name = btn.dataset.v;
+  ({ play: playVoice, edit: editVoice, recalibrate, delete: removeVoice })[btn.dataset.act](name);
+};
 
 let voiceAudio = null;
 
@@ -827,12 +883,13 @@ function closeVoicePanel() {
 }
 
 function playVoice(name) {
-  const btn = document.querySelector(`#voiceRows .vplay[data-v="${name}"]`);
-  const wasPlaying = voiceAudio && voiceAudio.dataset && voiceAudio.dataset.name === name;
+  const btn = [...document.querySelectorAll("#voiceRows .vplay")].find(b => b.dataset.v === name);
+  const wasPlaying = voiceAudio && voiceAudio.dataset.name === name;
   stopVoicePanelAudio();
   if (wasPlaying) return;          // second press stops
   voiceAudio = new Audio(`/api/voice-library/${encodeURIComponent(name)}/audio`);
-  voiceAudio.dataset = { name };
+  // dataset itself is read-only; assigning an object to it silently did nothing.
+  voiceAudio.dataset.name = name;
   voiceAudio.onended = stopVoicePanelAudio;
   voiceAudio.onerror = stopVoicePanelAudio;
   if (btn) btn.textContent = "■";
@@ -842,13 +899,15 @@ function playVoice(name) {
 async function recalibrate(name) {
   vStatus(`Measuring ${name}… this takes a moment.`);
   const r = await fetch(`/api/voice-library/${encodeURIComponent(name)}/recalibrate`, { method: "POST" });
-  vStatus(r.ok ? `${name} remeasured.` : "Could not measure that voice.", !r.ok);
+  vStatus(r.ok ? `${name} remeasured.` : await errorDetail(r, "Could not measure that voice."), !r.ok);
   refreshVoiceRows();
 }
 
 async function removeVoice(name) {
   if (!confirm(`Delete the voice "${name}"?`)) return;
   await fetch(`/api/voice-library/${encodeURIComponent(name)}`, { method: "DELETE" });
+  for (const k of Object.keys(chapterVoices)) if (chapterVoices[k] === name) delete chapterVoices[k];
+  updateVoiceSummary();
   await refreshVoiceRows();
   await loadVoices(ENGINE);
   if (book) renderChapters();
@@ -880,8 +939,7 @@ $("vAdd").onclick = async () => {
   const r = await fetch("/api/voice-source", { method: "POST", body: fd });
   $("vAdd").disabled = false;
   if (!r.ok) {
-    const e = await r.json().catch(() => ({ detail: "Failed" }));
-    vStatus(e.detail, true);
+    vStatus(await errorDetail(r, "Could not read that recording."), true);
     return;
   }
   const data = await r.json();
@@ -930,7 +988,7 @@ function weDraw() {
   g.lineWidth = 1;
   g.beginPath();
   for (let i = 0; i < n; i++) {
-    const x = (i / (n - 1)) * w;
+    const x = n > 1 ? (i / (n - 1)) * w : w / 2;
     const a = we.peaks[i] * (h / 2 - 4);
     g.moveTo(x, mid - a); g.lineTo(x, mid + a);
   }
@@ -1052,8 +1110,7 @@ $("weSave").onclick = async () => {
   });
   $("weSave").disabled = false;
   if (!r.ok) {
-    const e = await r.json().catch(() => ({ detail: "Failed" }));
-    $("weStatus").innerHTML = `<span class="err">${escapeHtml(e.detail)}</span>`;
+    $("weStatus").innerHTML = `<span class="err">${escapeHtml(await errorDetail(r, "Could not save the clip."))}</span>`;
     return;
   }
   $("weStatus").innerHTML = `<span class="ok">Saved. Its pace will be remeasured on first use.</span>`;
@@ -1073,16 +1130,16 @@ $("coverFile").onchange = async () => {
   const fd = new FormData();
   fd.append("file", f);
   const r = await fetch("/api/cover", { method: "POST", body: fd });
-  if (!r.ok) { $("coverName").textContent = "Could not read that image."; return; }
+  if (!r.ok) { $("coverName").textContent = await errorDetail(r, "Could not read that image."); return; }
   const d = await r.json();
-  coverPath = d.path;
-  $("coverPreview").src = "/api/cover-file?path=" + encodeURIComponent(coverPath) + "&t=" + Date.now();
+  coverId = d.id;
+  $("coverPreview").src = d.url;
   $("coverPreview").classList.remove("hidden");
   $("coverName").textContent = f.name;
   $("coverClear").classList.remove("hidden");
 };
 $("coverClear").onclick = () => {
-  coverPath = "";
+  coverId = "";
   $("coverPreview").classList.add("hidden");
   $("coverClear").classList.add("hidden");
   $("coverName").textContent = "";
@@ -1090,9 +1147,14 @@ $("coverClear").onclick = () => {
 };
 
 // ---- jobs list ----------------------------------------------------------
-const smallBtn = (label, fn, id) =>
-  `<button class="ghost" style="padding:.2rem .6rem;font-size:.8rem;margin-right:.3rem" ` +
-  `onclick="${fn}('${id}')">${label}</button>`;
+const smallBtn = (label, act, id) =>
+  `<button class="ghost mini" style="margin-right:.3rem" data-act="${act}" data-id="${escapeHtml(id)}">${label}</button>`;
+
+$("jobRows").onclick = e => {
+  const btn = e.target.closest("button[data-act]");
+  if (!btn) return;
+  ({ watch: watchJob, cancel: cancelJob, resume: resumeJob, delete: deleteJob })[btn.dataset.act](btn.dataset.id);
+};
 
 async function refreshJobs() {
   const { jobs } = await fetch("/api/jobs").then(r => r.json());
@@ -1101,17 +1163,17 @@ async function refreshJobs() {
     // available action (as orphaned "running" jobs used to).
     let action = "";
     if (j.live) {
-      action = smallBtn("Watch", "watchJob", j.job_id) +
-               smallBtn("Cancel", "cancelJob", j.job_id);
+      action = smallBtn("Watch", "watch", j.job_id) + smallBtn("Cancel", "cancel", j.job_id);
     } else if (j.status === "done") {
-      action = `<a href="/api/jobs/${j.job_id}/download">Download</a>` +
-               ` &nbsp;${smallBtn("Delete", "deleteJob", j.job_id)}`;
+      action = `<a href="/api/jobs/${encodeURIComponent(j.job_id)}/download">Download</a>` +
+               ` &nbsp;${smallBtn("Delete", "delete", j.job_id)}`;
     } else {
-      action = smallBtn("Resume", "resumeJob", j.job_id) +
-               smallBtn("Delete", "deleteJob", j.job_id);
+      action = smallBtn("Resume", "resume", j.job_id) + smallBtn("Delete", "delete", j.job_id);
     }
-    const status = j.status === "interrupted"
-      ? `<span title="${escapeHtml(j.error || "")}">interrupted</span>` : j.status;
+    // Hover a failed or interrupted status to see why.
+    const status = j.error
+      ? `<span title="${escapeHtml(j.error)}" style="text-decoration:underline dotted">${escapeHtml(j.status)}</span>`
+      : escapeHtml(j.status);
     return `<tr><td>${escapeHtml(j.title)}</td><td>${escapeHtml(j.voice)}</td>` +
       `<td>${status}</td><td>${j.done}/${j.total}</td><td style="white-space:nowrap">${action}</td></tr>`;
   }).join("") : `<tr><td colspan="5" style="color:var(--muted)">No jobs yet.</td></tr>`;
@@ -1119,28 +1181,35 @@ async function refreshJobs() {
 
 function attach(id) {
   currentJob = id;
+  $("startBtn").disabled = true;
   $("progPanel").classList.remove("hidden");
+  $("pStage").textContent = "Starting…";
+  $("pPct").textContent = "";
+  $("pBar").style.width = "0";
+  $("pChapter").textContent = "";
   $("pResult").innerHTML = "";
   $("cancelBtn").classList.remove("hidden");
   listen(id);
 }
 
 async function resumeJob(id) {
-  await fetch(`/api/jobs/${id}/resume`, { method: "POST" });
+  const r = await fetch(`/api/jobs/${encodeURIComponent(id)}/resume`, { method: "POST" });
+  if (!r.ok) { alert(await errorDetail(r, "Could not resume this job.")); return; }
   attach(id);
+  refreshJobs();
 }
 
 function watchJob(id) { attach(id); }
 
 async function cancelJob(id) {
-  await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
+  await fetch(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: "POST" });
   refreshJobs();
 }
 
 async function deleteJob(id) {
   if (!confirm("Delete this job and its part-finished audio?")) return;
-  const r = await fetch(`/api/jobs/${id}`, { method: "DELETE" });
-  if (!r.ok) alert("Could not delete — cancel the job first.");
+  const r = await fetch(`/api/jobs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  if (!r.ok) alert(await errorDetail(r, "Could not delete this job."));
   refreshJobs();
 }
 </script>

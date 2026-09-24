@@ -14,13 +14,20 @@ more accurate than single-pass normalisation and does not pump.
 from __future__ import annotations
 
 import json
+import logging
 import re
-import subprocess
 from pathlib import Path
+
+import numpy as np
+
+from audiobooktts import ffmpeg
+
+logger = logging.getLogger(__name__)
 
 # Mid-ACX, and the usual target for spoken-word audiobooks.
 TARGET_LUFS = -19.0
 ACX_PEAK_DB = -3.0
+ACX_RMS_RANGE_DB = (-23.0, -18.0)
 # Aim below the ceiling: limiting exactly at -3.0 lands around -2.9993, which
 # fails the spec by a whisker.
 TARGET_PEAK_DB = -3.3
@@ -31,73 +38,145 @@ HIGHPASS_HZ = 65
 # Gentle: enough to tame TTS sibilance without lisping the output.
 DEESSER_INTENSITY = 0.12
 
+# atempo accepts 0.5-2.0 per stage.
+_ATEMPO_MIN, _ATEMPO_MAX = 0.5, 2.0
+
 
 class MasteringError(RuntimeError):
     pass
 
 
 def atempo_chain(tempo: float) -> str:
-    """atempo only accepts 0.5–2.0 per stage, so chain it for larger shifts."""
+    """A pitch-preserving time-stretch, chained for shifts beyond one stage."""
+    if tempo <= 0:
+        raise ValueError(f"tempo must be positive, got {tempo}")
     stages = []
     remaining = float(tempo)
-    while remaining < 0.5:
-        stages.append("atempo=0.5")
-        remaining /= 0.5
-    while remaining > 2.0:
-        stages.append("atempo=2.0")
-        remaining /= 2.0
+    while remaining < _ATEMPO_MIN:
+        stages.append(f"atempo={_ATEMPO_MIN}")
+        remaining /= _ATEMPO_MIN
+    while remaining > _ATEMPO_MAX:
+        stages.append(f"atempo={_ATEMPO_MAX}")
+        remaining /= _ATEMPO_MAX
     stages.append(f"atempo={remaining:.6f}")
     return ",".join(stages)
 
 
-def apply_filters(audio, sample_rate: int, filters: str):
-    """Run an ffmpeg filter chain over an in-memory float32 array."""
-    import numpy as np
+def apply_filters(audio: np.ndarray, sample_rate: int, filters: str) -> np.ndarray:
+    """Run an ffmpeg filter chain over an in-memory mono float32 array.
 
+    Filtering is an enhancement, so a failure logs a warning and returns the
+    input unchanged rather than losing the narration.
+    """
     audio = np.asarray(audio, dtype=np.float32).reshape(-1)
     if audio.size == 0 or not filters:
         return audio
-    proc = subprocess.run(
+    raw = ["-f", "f32le", "-ar", str(sample_rate), "-ac", "1"]
+    proc = ffmpeg.run(
         [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-f", "f32le", "-ar", str(sample_rate), "-ac", "1", "-i", "pipe:0",
-            "-af", filters,
-            "-f", "f32le", "-ar", str(sample_rate), "-ac", "1", "pipe:1",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            *raw,
+            "-i",
+            "pipe:0",
+            "-af",
+            filters,
+            *raw,
+            "pipe:1",
         ],
-        input=audio.tobytes(), capture_output=True,
+        input=audio.tobytes(),
     )
     if proc.returncode != 0 or not proc.stdout:
-        # Filtering is an enhancement; never lose the narration over it.
+        logger.warning(
+            "ffmpeg filter %r failed; using unfiltered audio: %s",
+            filters,
+            proc.stderr.decode("utf-8", "replace")[-500:],
+        )
         return audio
     return np.frombuffer(proc.stdout, dtype=np.float32).copy()
 
 
-def measure(
-    path: str | Path, input_args: list[str] | None = None
-) -> dict[str, float] | None:
+def time_stretch_file(src: Path, dst: Path, tempo: float) -> None:
+    """Time-stretch an audio file into a FLAC at ``dst``. Raises on failure."""
+    proc = ffmpeg.run(
+        [
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(src),
+            "-af",
+            atempo_chain(tempo),
+            "-c:a",
+            "flac",
+            "-sample_fmt",
+            "s16",
+            "-f",
+            "flac",
+            str(dst),
+        ],
+        text=True,
+    )
+    if proc.returncode != 0:
+        raise MasteringError(f"Time-stretch failed: {proc.stderr[-500:]}")
+
+
+def pre_filters() -> list[str]:
+    """Clean-up stages that run before loudness correction."""
+    return [
+        f"highpass=f={HIGHPASS_HZ}",
+        f"deesser=i={DEESSER_INTENSITY}",
+        # Light 2:1 — TTS is already consistent (measured 2-4 LU range), so
+        # this tightens rather than squashes.
+        "acompressor=threshold=-18dB:ratio=2:attack=15:release=250:makeup=1",
+    ]
+
+
+def measure(path: str | Path, input_args: list[str] | None = None) -> dict[str, float] | None:
     """First pass: measure loudness. None if ffmpeg gives nothing usable.
+
+    The clean-up stages run here too. Loudness correction is computed from this
+    measurement but applied after those stages, so measuring the raw signal
+    instead left the result well short of target — the compressor alone moved
+    it by more than 2 LU.
 
     input_args lets the caller pass demuxer flags, e.g. the concat list the
     packager assembles rather than a plain audio file.
     """
-    result = subprocess.run(
+    chain = ",".join(
         [
-            "ffmpeg", "-hide_banner", "-nostats",
-            *(input_args or []), "-i", str(path),
-            "-af", f"loudnorm=I={TARGET_LUFS}:TP={TARGET_PEAK_DB}:"
-                   f"LRA={TARGET_LRA}:print_format=json",
-            "-f", "null", "-",
+            *pre_filters(),
+            f"loudnorm=I={TARGET_LUFS}:TP={TARGET_PEAK_DB}:LRA={TARGET_LRA}:print_format=json",
+        ]
+    )
+    result = ffmpeg.run(
+        [
+            "-hide_banner",
+            "-nostats",
+            *(input_args or []),
+            "-i",
+            str(path),
+            "-af",
+            chain,
+            "-f",
+            "null",
+            "-",
         ],
-        capture_output=True, text=True,
+        text=True,
     )
     match = re.search(r"\{[^{}]*\"input_i\"[^{}]*\}", result.stderr, re.S)
     if not match:
+        logger.warning("Loudness measurement failed; falling back to single-pass mastering")
         return None
     try:
         data = json.loads(match.group(0))
-        return {k: float(v) for k, v in data.items()
-                if k.startswith(("input_", "target_", "output_"))
-                and v not in ("-inf", "inf")}
+        return {
+            k: float(v)
+            for k, v in data.items()
+            if k.startswith(("input_", "target_", "output_")) and v not in ("-inf", "inf")
+        }
     except (ValueError, TypeError):
         return None
 
@@ -108,20 +187,14 @@ def filter_chain(measured: dict[str, float] | None = None) -> str:
     Order matters: clean up the spectrum, even out dynamics, set the loudness,
     then catch anything still over the peak ceiling.
     """
-    stages = [
-        f"highpass=f={HIGHPASS_HZ}",
-        f"deesser=i={DEESSER_INTENSITY}",
-        # Light 2:1 — TTS is already consistent (measured 2-4 LU range), so
-        # this tightens rather than squashes.
-        "acompressor=threshold=-18dB:ratio=2:attack=15:release=250:makeup=1",
-    ]
-
+    stages = pre_filters()
     if measured:
         stages.append(
             "loudnorm=I={i}:TP={tp}:LRA={lra}:measured_I={mi}:measured_TP={mtp}:"
-            "measured_LRA={mlra}:measured_thresh={mth}:offset={off}:linear=true"
-            .format(
-                i=TARGET_LUFS, tp=TARGET_PEAK_DB, lra=TARGET_LRA,
+            "measured_LRA={mlra}:measured_thresh={mth}:offset={off}:linear=true".format(
+                i=TARGET_LUFS,
+                tp=TARGET_PEAK_DB,
+                lra=TARGET_LRA,
                 mi=measured.get("input_i", -26.0),
                 mtp=measured.get("input_tp", -2.0),
                 mlra=measured.get("input_lra", 4.0),
@@ -132,17 +205,25 @@ def filter_chain(measured: dict[str, float] | None = None) -> str:
     else:
         # Single pass still gets the level roughly right.
         stages.append(f"loudnorm=I={TARGET_LUFS}:TP={TARGET_PEAK_DB}:LRA={TARGET_LRA}")
-
     stages.append(f"alimiter=limit={TARGET_PEAK_DB}dB:level=disabled")
     return ",".join(stages)
 
 
 def verify(path: str | Path) -> dict[str, float]:
-    """Measure the finished file against the ACX numbers."""
-    result = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-nostats", "-i", str(path),
-         "-af", "astats=metadata=1", "-f", "null", "-"],
-        capture_output=True, text=True,
+    """Measure a finished file against the ACX numbers."""
+    result = ffmpeg.run(
+        [
+            "-hide_banner",
+            "-nostats",
+            "-i",
+            str(path),
+            "-af",
+            "astats=metadata=1",
+            "-f",
+            "null",
+            "-",
+        ],
+        text=True,
     )
     out: dict[str, float] = {}
     for key, label in (
@@ -150,9 +231,10 @@ def verify(path: str | Path) -> dict[str, float]:
         ("Peak level dB", "peak_db"),
         ("Noise floor dB", "noise_floor_db"),
     ):
-        m = re.search(rf"{re.escape(key)}: (-?[\d.]+|-?inf)", result.stderr)
-        if m and m.group(1) not in ("-inf", "inf"):
-            out[label] = float(m.group(1))
+        # The overall summary comes last, after any per-channel sections.
+        values = re.findall(rf"{re.escape(key)}: (-?[\d.]+|-?inf)", result.stderr)
+        if values and values[-1] not in ("-inf", "inf"):
+            out[label] = float(values[-1])
     return out
 
 
@@ -161,4 +243,5 @@ def meets_acx(stats: dict[str, float]) -> bool:
     peak = stats.get("peak_db")
     if rms is None or peak is None:
         return False
-    return -23.0 <= rms <= -18.0 and peak <= ACX_PEAK_DB
+    low, high = ACX_RMS_RANGE_DB
+    return low <= rms <= high and peak <= ACX_PEAK_DB

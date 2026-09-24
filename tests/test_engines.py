@@ -6,14 +6,15 @@ import os
 import sys
 import time
 import types
+from typing import ClassVar
 
 import numpy as np
 import pytest
-from helpers import write_tone
 
 from audiobooktts import config
 from audiobooktts.engines import EngineUnavailableError
 from audiobooktts.engines import chatterbox as cb
+from helpers import write_tone
 
 
 class _FakeTensor:
@@ -33,7 +34,7 @@ class _FakeTensor:
 class _FakeModel:
     """Mimics chatterbox.tts.ChatterboxTTS: conds attribute, prepare, generate."""
 
-    instances: list[_FakeModel] = []
+    instances: ClassVar[list[_FakeModel]] = []
 
     def __init__(self, device):
         self.device = device
@@ -78,8 +79,10 @@ def fake_torch_stack(monkeypatch):
     turbo = types.ModuleType("chatterbox.tts_turbo")
     turbo.ChatterboxTurboTTS = _FakeModel
     for name, module in {
-        "torch": torch, "chatterbox": chatterbox,
-        "chatterbox.tts": tts, "chatterbox.tts_turbo": turbo,
+        "torch": torch,
+        "chatterbox": chatterbox,
+        "chatterbox.tts": tts,
+        "chatterbox.tts_turbo": turbo,
     }.items():
         monkeypatch.setitem(sys.modules, name, module)
     monkeypatch.setattr(cb, "installed_backends", lambda: {"mlx": False, "torch": True})
@@ -138,8 +141,11 @@ def test_torch_backend_switches_and_caches_voices(fake_torch_stack):
     # Each clip is prepared once, however often the voice changes.
     assert [os.path.basename(p) for p in model.prepared] == ["alice.wav", "bob.wav"]
     assert model.generated_with == [
-        "conds:alice.wav:1", "conds:alice.wav:1", "conds:bob.wav:2",
-        "builtin-conds", "conds:alice.wav:1",
+        "conds:alice.wav:1",
+        "conds:alice.wav:1",
+        "conds:bob.wav:2",
+        "builtin-conds",
+        "conds:alice.wav:1",
     ]
     assert engine.describe() == "Chatterbox-Turbo on torch (cpu)"
 
@@ -183,5 +189,9 @@ def test_unknown_voice_is_an_error(fake_torch_stack):
 
 
 def test_conditioning_windows_follow_the_variant():
-    assert cb.ChatterboxEngine(model_id="x/chatterbox-turbo").conditioning_windows()["speaker_s"] == 15
-    assert cb.ChatterboxEngine(model_id="x/chatterbox-fp16").conditioning_windows()["speaker_s"] == 6
+    assert (
+        cb.ChatterboxEngine(model_id="x/chatterbox-turbo").conditioning_windows()["speaker_s"] == 15
+    )
+    assert (
+        cb.ChatterboxEngine(model_id="x/chatterbox-fp16").conditioning_windows()["speaker_s"] == 6
+    )

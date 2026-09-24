@@ -30,7 +30,6 @@ classifiers = [
 ]
 dependencies = [
     "beautifulsoup4>=4.12",
-    "ebooklib>=0.18",
     "fastapi>=0.110",
     "lxml>=4.9",
     "num2words>=0.5.12",
@@ -69,10 +68,6 @@ packages = ["src/audiobooktts"]
 testpaths = ["tests"]
 addopts = "-ra"
 filterwarnings = [
-    # Third-party deprecations that are not ours to fix.
-    "ignore::DeprecationWarning:ebooklib.*",
-    "ignore::FutureWarning:ebooklib.*",
-    "ignore::UserWarning:ebooklib.*",
     # epub.py silences this globally at import; pytest resets filters per test.
     "ignore::bs4.XMLParsedAsHTMLWarning",
 ]

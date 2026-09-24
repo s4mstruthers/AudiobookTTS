@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
-from helpers import build_epub, build_raw_epub, tiny_png
 
 from audiobooktts.epub import EpubError, _repair_metadata, parse_epub
+from helpers import build_epub, build_raw_epub, tiny_png
 
 BODY = "<p>" + "It was a quiet evening and nothing stirred at all. " * 8 + "</p>"
 
@@ -55,8 +55,8 @@ def test_chapters_titles_and_front_matter(epub_path):
 
 
 def test_epub3_cover_image_is_found(epub_path):
-    # Regression: ebooklib types EPUB 3 cover-image items as covers, not images,
-    # so searching images alone missed the cover of most modern books.
+    # Regression: the EPUB 3 cover-image property was missed, losing the cover
+    # of most modern books.
     book = parse_epub(epub_path)
     assert book.cover == tiny_png()
     assert book.cover_media_type == "image/png"
@@ -71,7 +71,9 @@ def test_epub2_meta_cover_is_found(tmp_path):
     path = build_raw_epub(
         tmp_path / "e2.epub",
         {
-            "content.opf": _opf(manifest, '<itemref idref="c1"/>', '<meta name="cover" content="img1"/>'),
+            "content.opf": _opf(
+                manifest, '<itemref idref="c1"/>', '<meta name="cover" content="img1"/>'
+            ),
             "toc.ncx": _ncx([("c1.xhtml", "Opening")]),
             "c1.xhtml": _xhtml("Opening"),
             "images/front.png": tiny_png(),
@@ -82,7 +84,7 @@ def test_epub2_meta_cover_is_found(tmp_path):
 
 def test_ncx_links_relative_to_ncx_folder_and_percent_encoded(tmp_path):
     # Regression: NCX links are relative to the NCX file and may be
-    # percent-encoded; ebooklib passes them through as written.
+    # percent-encoded; both must be resolved to match the spine.
     manifest = (
         '<item id="ncx" href="OEBPS/toc.ncx" media-type="application/x-dtbncx+xml"/>'
         '<item id="c1" href="OEBPS/Text/one.xhtml" media-type="application/xhtml+xml"/>'
@@ -103,9 +105,7 @@ def test_ncx_links_relative_to_ncx_folder_and_percent_encoded(tmp_path):
 
 
 def test_single_file_book_split_at_anchors(tmp_path):
-    body = "".join(
-        f'<h2 id="c{i}">Part {i}</h2>{BODY}' for i in range(1, 4)
-    )
+    body = "".join(f'<h2 id="c{i}">Part {i}</h2>{BODY}' for i in range(1, 4))
     manifest = (
         '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
         '<item id="all" href="all.xhtml" media-type="application/xhtml+xml"/>'
@@ -115,7 +115,9 @@ def test_single_file_book_split_at_anchors(tmp_path):
         {
             "content.opf": _opf(manifest, '<itemref idref="all"/>'),
             "toc.ncx": _ncx([(f"all.xhtml#c{i}", f"Part {i}") for i in range(1, 4)]),
-            "all.xhtml": '<html xmlns="http://www.w3.org/1999/xhtml"><body>' + body + "</body></html>",
+            "all.xhtml": '<html xmlns="http://www.w3.org/1999/xhtml"><body>'
+            + body
+            + "</body></html>",
         },
     )
     chapters = parse_epub(path).chapters
@@ -124,7 +126,7 @@ def test_single_file_book_split_at_anchors(tmp_path):
 
 
 def test_empty_navmap_does_not_crash(tmp_path):
-    # ebooklib returns a single Link rather than a list for an empty navMap.
+    # Regression: an empty navMap crashed the previous parser.
     manifest = (
         '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
         '<item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>'
@@ -148,7 +150,7 @@ def test_not_an_epub_raises(tmp_path):
 
 
 def test_book_without_cover(tmp_path):
-    book = parse_epub(build_epub(tmp_path / "nocover.epub", cover=None))
+    book = parse_epub(build_epub(tmp_path / "nocover.epub", cover=False))
     assert book.cover is None
 
 
@@ -163,3 +165,65 @@ def test_book_without_cover(tmp_path):
 )
 def test_repair_metadata(title, author, expected):
     assert _repair_metadata(title, author) == expected
+
+
+@pytest.mark.parametrize("toc", ["ncx", "nav", "both"])
+def test_either_table_of_contents_gives_the_titles(tmp_path, toc):
+    book = parse_epub(build_epub(tmp_path / f"{toc}.epub", toc=toc))
+    assert [c.title for c in book.chapters] == ["Chapter I", "Chapter II", "Chapter III"]
+
+
+def test_xml_external_entities_are_not_resolved(tmp_path):
+    # A crafted epub must not be able to read files from this computer (XXE).
+    secret = tmp_path / "secret.txt"
+    secret.write_text("TOP-SECRET", encoding="utf-8")
+    manifest = '<item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>'
+    opf = _opf(manifest, '<itemref idref="c1"/>', toc_id="").replace(
+        "<dc:title>Raw Book</dc:title>", "<dc:title>&xxe;</dc:title>"
+    )
+    opf = opf.replace(
+        '<?xml version="1.0" encoding="utf-8"?>',
+        '<?xml version="1.0" encoding="utf-8"?>'
+        f'<!DOCTYPE package [<!ENTITY xxe SYSTEM "{secret.as_uri()}">]>',
+    )
+    path = build_raw_epub(tmp_path / "xxe.epub", {"content.opf": opf, "c1.xhtml": _xhtml("One")})
+    assert "TOP-SECRET" not in parse_epub(path).title
+
+
+def test_links_with_the_wrong_case_still_resolve(tmp_path):
+    manifest = (
+        '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
+        '<item id="c1" href="Text/One.xhtml" media-type="application/xhtml+xml"/>'
+    )
+    path = build_raw_epub(
+        tmp_path / "case.epub",
+        {
+            "content.opf": _opf(manifest, '<itemref idref="c1"/>'),
+            "toc.ncx": _ncx([("Text/One.xhtml", "Opening")]),
+            "text/one.xhtml": _xhtml("One"),  # stored with different case
+        },
+    )
+    assert [c.title for c in parse_epub(path).chapters] == ["Opening"]
+
+
+def test_missing_chapter_file_is_skipped(tmp_path):
+    manifest = (
+        '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
+        '<item id="c1" href="c1.xhtml" media-type="application/xhtml+xml"/>'
+        '<item id="c2" href="gone.xhtml" media-type="application/xhtml+xml"/>'
+    )
+    path = build_raw_epub(
+        tmp_path / "missing.epub",
+        {
+            "content.opf": _opf(manifest, '<itemref idref="c1"/><itemref idref="c2"/>'),
+            "toc.ncx": _ncx([("c1.xhtml", "Present")]),
+            "c1.xhtml": _xhtml("Present"),
+        },
+    )
+    assert [c.title for c in parse_epub(path).chapters] == ["Present"]
+
+
+def test_missing_package_file_raises(tmp_path):
+    path = build_raw_epub(tmp_path / "noopf.epub", {"c1.xhtml": _xhtml("One")})
+    with pytest.raises(EpubError, match="missing"):
+        parse_epub(path)

@@ -8,7 +8,6 @@ import threading
 
 import pytest
 import soundfile as sf
-from helpers import build_epub, needs_ffmpeg, tiny_png, write_tone
 
 from audiobooktts import config, pacing
 from audiobooktts.config import Config
@@ -17,6 +16,7 @@ from audiobooktts.mastering import meets_acx, verify
 from audiobooktts.pipeline import JobCancelledError, create_job, run_job
 from audiobooktts.store import JobNotFoundError, JobStore, Manifest, pid_alive
 from audiobooktts.voices import VoiceClipError
+from helpers import build_epub, needs_ffmpeg, tiny_png, write_tone
 
 # --- filesystem and config ---------------------------------------------------
 
@@ -63,8 +63,14 @@ def test_config_survives_bad_values(app_home):
 
 def _manifest(job_id: str = "book-abc123", **kw) -> Manifest:
     base = dict(
-        job_id=job_id, epub_path="", epub_sha256="", book_title="B", book_author="A",
-        engine="chatterbox", voice="", speed=1.0,
+        job_id=job_id,
+        epub_path="",
+        epub_sha256="",
+        book_title="B",
+        book_author="A",
+        engine="chatterbox",
+        voice="",
+        speed=1.0,
     )
     return Manifest(**{**base, **kw})
 
@@ -127,7 +133,9 @@ def test_convert_end_to_end(tmp_path, epub_path, fake_engine):
 
     probe = subprocess.run(
         ["ffprobe", "-v", "error", "-show_chapters", "-show_streams", "-of", "json", str(out)],
-        capture_output=True, text=True, check=True,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout
     assert probe.count('"title": "Chapter') == 3
     assert '"attached_pic": 1' in probe  # the epub's cover was embedded

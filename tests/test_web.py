@@ -7,10 +7,10 @@ import time
 
 import pytest
 from fastapi.testclient import TestClient
-from helpers import needs_ffmpeg, tiny_png, write_tone
 
 from audiobooktts import config, web
 from audiobooktts.store import JobStore, Manifest
+from helpers import needs_ffmpeg, tiny_png, write_tone
 
 
 @pytest.fixture
@@ -148,10 +148,20 @@ def test_resume_refuses_a_job_running_elsewhere(client):
     import os
 
     store = JobStore()
-    store.save(Manifest(
-        job_id="busy-000001", epub_path="", epub_sha256="", book_title="B", book_author="A",
-        engine="chatterbox", voice="", speed=1.0, status="running", pid=os.getppid(),
-    ))
+    store.save(
+        Manifest(
+            job_id="busy-000001",
+            epub_path="",
+            epub_sha256="",
+            book_title="B",
+            book_author="A",
+            engine="chatterbox",
+            voice="",
+            speed=1.0,
+            status="running",
+            pid=os.getppid(),
+        )
+    )
     assert client.post("/api/jobs/busy-000001/resume").status_code == 409
     assert client.delete("/api/jobs/busy-000001").status_code == 409
 
@@ -186,7 +196,9 @@ def test_voice_library_flow(client, tmp_path):
     assert library["windows"]["speaker_s"] == 15
 
     assert client.get("/api/voice-library/Irene_Adler/audio").content[:4] == b"RIFF"
-    segment = client.get("/api/voice-source/Irene_Adler/segment", params={"start": 1, "duration": 3})
+    segment = client.get(
+        "/api/voice-source/Irene_Adler/segment", params={"start": 1, "duration": 3}
+    )
     assert segment.content[:4] == b"RIFF"
     voices = client.get("/api/voices").json()["voices"]
     assert {"id": "Irene_Adler", "kind": "clone"}.items() <= voices[1].items()
@@ -198,9 +210,7 @@ def test_voice_library_flow(client, tmp_path):
 
 def test_voice_names_are_validated(client, tmp_path):
     for bad in ("", "!!!", "default"):
-        r = client.post(
-            "/api/voice-source", files={"file": ("a.wav", b"RIFF")}, data={"name": bad}
-        )
+        r = client.post("/api/voice-source", files={"file": ("a.wav", b"RIFF")}, data={"name": bad})
         assert r.status_code == 400
 
 

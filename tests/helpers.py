@@ -44,47 +44,94 @@ def build_epub(
     title: str = "The Test Book",
     author: str = "Jane Tester",
     chapters: int = 3,
-    cover: str | None = "epub3",
+    cover: bool = True,
     front_matter: bool = True,
+    toc: str = "both",
 ) -> Path:
-    """Write an epub with ebooklib: numbered chapters, optional cover and copyright page."""
-    from ebooklib import epub
+    """Write an EPUB 3 book: numbered chapters, optional cover and copyright page.
 
-    b = epub.EpubBook()
-    b.set_identifier("test-book")
-    b.set_title(title)
-    b.set_language("en")
-    b.add_author(author)
-    if cover == "epub3":
-        b.set_cover("cover.png", tiny_png())
-    docs = []
+    toc chooses the table of contents: "ncx" (EPUB 2), "nav" (EPUB 3) or "both",
+    as most real books carry.
+    """
     numerals = ["I", "II", "III", "IV", "V", "VI"]
-    for i in range(chapters):
-        name = f"Chapter {numerals[i]}"
-        doc = epub.EpubHtml(title=name, file_name=f"ch{i + 1}.xhtml", lang="en")
+    docs = [(f"ch{i + 1}.xhtml", f"Chapter {numerals[i]}", i) for i in range(chapters)]
+    files: dict[str, str | bytes] = {}
+    for name, heading, i in docs:
         body = "".join(f"<p>{PARAGRAPH * (i + 1)}Paragraph {j}.</p>" for j in range(3))
-        doc.content = f"<h1>{name}</h1>{body}"
-        b.add_item(doc)
-        docs.append(doc)
-    toc = [epub.Link(d.file_name, d.title, d.file_name) for d in docs]
-    spine: list = ["nav"]
+        files[f"EPUB/{name}"] = _xhtml(heading, f"<h1>{heading}</h1>{body}")
+    toc_entries = [(name, heading) for name, heading, _ in docs]
+    spine = ["nav"] + [f"c{i}" for i in range(chapters)]
+    manifest = [
+        f'<item id="c{i}" href="{name}" media-type="application/xhtml+xml"/>' for name, _, i in docs
+    ]
     if front_matter:
-        cr = epub.EpubHtml(title="Copyright", file_name="copyright.xhtml")
-        cr.content = "<p>" + "All rights reserved. " * 20 + "</p>"
-        b.add_item(cr)
-        toc.insert(0, epub.Link("copyright.xhtml", "Copyright", "copyright"))
-        spine.append(cr)
-    b.toc = toc
-    b.add_item(epub.EpubNcx())
-    b.add_item(epub.EpubNav())
-    b.spine = spine + docs
-    epub.write_epub(str(path), b)
-    return path
+        files["EPUB/copyright.xhtml"] = _xhtml(
+            "Copyright", "<p>" + "All rights reserved. " * 20 + "</p>"
+        )
+        manifest.append(
+            '<item id="copy" href="copyright.xhtml" media-type="application/xhtml+xml"/>'
+        )
+        spine.insert(1, "copy")
+        toc_entries.insert(0, ("copyright.xhtml", "Copyright"))
+    if cover:
+        files["EPUB/cover.png"] = tiny_png()
+        manifest.append(
+            '<item id="cover-img" href="cover.png" media-type="image/png" '
+            'properties="cover-image"/>'
+        )
+
+    nav_links = "".join(f'<li><a href="{h}">{t}</a></li>' for h, t in toc_entries)
+    files["EPUB/nav.xhtml"] = _xhtml(
+        "Contents", f'<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>{nav_links}</ol></nav>'
+    )
+    manifest.append(
+        '<item id="nav" href="nav.xhtml" media-type="application/xhtml+xml"'
+        + (' properties="nav"' if toc in ("nav", "both") else "")
+        + "/>"
+    )
+    spine_toc = ""
+    if toc in ("ncx", "both"):
+        points = "".join(
+            f'<navPoint id="p{i}"><navLabel><text>{t}</text></navLabel>'
+            f'<content src="{h}"/></navPoint>'
+            for i, (h, t) in enumerate(toc_entries)
+        )
+        files["EPUB/toc.ncx"] = (
+            '<?xml version="1.0" encoding="utf-8"?>'
+            '<ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1">'
+            f"<head/><docTitle><text>{title}</text></docTitle><navMap>{points}</navMap></ncx>"
+        )
+        manifest.append('<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>')
+        spine_toc = ' toc="ncx"'
+
+    itemrefs = "".join(f'<itemref idref="{i}"/>' for i in spine)
+    files["EPUB/content.opf"] = f"""<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="id">test-book</dc:identifier>
+    <dc:title>{title}</dc:title>
+    <dc:creator>{author}</dc:creator>
+    <dc:language>en</dc:language>
+  </metadata>
+  <manifest>{"".join(manifest)}</manifest>
+  <spine{spine_toc}>{itemrefs}</spine>
+</package>"""
+    return build_raw_epub(path, files, opf_path="EPUB/content.opf")
 
 
-def build_raw_epub(path: Path, files: dict[str, str | bytes], opf_path: str = "content.opf") -> Path:
-    """Write an epub zip by hand, for layouts ebooklib's writer cannot produce."""
-    with zipfile.ZipFile(path, "w") as z:
+def _xhtml(title: str, body: str) -> str:
+    return (
+        '<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+        '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">'
+        f"<head><title>{title}</title></head><body>{body}</body></html>"
+    )
+
+
+def build_raw_epub(
+    path: Path, files: dict[str, str | bytes], opf_path: str = "content.opf"
+) -> Path:
+    """Write an epub zip by hand, with complete control over its layout."""
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
         z.writestr("mimetype", "application/epub+zip", compress_type=zipfile.ZIP_STORED)
         z.writestr(
             "META-INF/container.xml",
@@ -96,8 +143,6 @@ def build_raw_epub(path: Path, files: dict[str, str | bytes], opf_path: str = "c
         for name, data in files.items():
             z.writestr(name, data)
     return path
-
-
 
 
 def write_tone(path: Path, seconds: float, sample_rate: int = 24000, channels: int = 1) -> Path:

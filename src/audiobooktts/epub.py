@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import bisect
+import logging
 import posixpath
 import re
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from urllib.parse import unquote
 
 from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
-from ebooklib import ITEM_COVER, ITEM_DOCUMENT, ITEM_IMAGE, ITEM_NAVIGATION
-from ebooklib import epub as ebepub
+
+from audiobooktts.epubfile import EpubFile, TocEntry
+from audiobooktts.epubfile import EpubFormatError as EpubError
+
+__all__ = ["Book", "Chapter", "EpubError", "parse_epub"]
+
+logger = logging.getLogger(__name__)
 
 # Epub content is XHTML, but the lenient HTML parser is the deliberate choice
 # here: real-world epubs are frequently malformed and a strict XML parse fails.
@@ -36,10 +41,6 @@ _SKIP_TITLE_RE = re.compile(
 _TITLE_BY_AUTHOR_RE = re.compile(r"^(.{2,}?)\s+by\s+(.{2,})$", re.IGNORECASE)
 
 
-class EpubError(ValueError):
-    """The file could not be read as an epub."""
-
-
 @dataclass
 class Chapter:
     title: str
@@ -56,67 +57,34 @@ class Book:
     cover_media_type: str | None = None
 
 
-def _norm_href(href: str) -> str:
-    return posixpath.normpath(unquote(href)).lstrip("/")
+def _toc_index(
+    toc: list[TocEntry], documents: set[str]
+) -> tuple[dict[str, list[tuple[str, str]]], dict[str, str]]:
+    """Group the table of contents by spine document.
 
-
-def _flatten_toc(toc) -> list[tuple[str, str, str]]:
-    """Flatten the nested TOC into ordered (href, fragment, title) triples."""
-    out: list[tuple[str, str, str]] = []
-
-    def add(node) -> None:
-        href = getattr(node, "href", None)
-        if href:
-            base, _, frag = href.partition("#")
-            out.append((base, frag, getattr(node, "title", "") or ""))
-
-    def walk(nodes) -> None:
-        # ebooklib returns a single Link, not a list, for an empty navMap.
-        if not isinstance(nodes, (list, tuple)):
-            nodes = [nodes]
-        for node in nodes:
-            if isinstance(node, tuple) and len(node) == 2:
-                section, children = node
-                add(section)
-                walk(children)
-            elif isinstance(node, list):
-                walk(node)
-            else:
-                add(node)
-
-    walk(toc)
-    return out
-
-
-def _href_resolver(book: ebepub.EpubBook, doc_names: set[str]):
-    """Map a TOC href onto a spine document name.
-
-    ebooklib resolves nav-document links against the nav file's folder, but
-    NCX links are passed through as written: relative to the NCX file, and
-    still percent-encoded. Chapters were silently lost from books laid out
-    that way, so every plausible reading is tried.
+    Returns the anchored entries per document, in order (for books that hold
+    several chapters in one file), and the title of each whole-file entry.
+    Links are matched exactly; failing that, by file name when that is
+    unambiguous, since some books get their folder structure wrong.
     """
-    by_norm = {_norm_href(n): n for n in doc_names}
     by_base: dict[str, list[str]] = {}
-    for n in doc_names:
-        by_base.setdefault(posixpath.basename(_norm_href(n)), []).append(n)
-    toc_dirs = {
-        posixpath.dirname(_norm_href(item.get_name()))
-        for item in book.get_items_of_type(ITEM_NAVIGATION)
-    }
+    for doc in documents:
+        by_base.setdefault(posixpath.basename(doc), []).append(doc)
 
-    def resolve(href: str) -> str | None:
-        norm = _norm_href(href)
-        if norm in by_norm:
-            return by_norm[norm]
-        for d in toc_dirs:
-            joined = _norm_href(posixpath.join(d, href))
-            if joined in by_norm:
-                return by_norm[joined]
-        same_base = by_base.get(posixpath.basename(norm), [])
-        return same_base[0] if len(same_base) == 1 else None
-
-    return resolve
+    frags: dict[str, list[tuple[str, str]]] = {}
+    titles: dict[str, str] = {}
+    for entry in toc:
+        doc = entry.path if entry.path in documents else None
+        if doc is None:
+            same_name = by_base.get(posixpath.basename(entry.path), [])
+            doc = same_name[0] if len(same_name) == 1 else None
+        if doc is None:
+            continue
+        if entry.fragment:
+            frags.setdefault(doc, []).append((entry.fragment, entry.title))
+        else:
+            titles.setdefault(doc, entry.title)
+    return frags, titles
 
 
 def _leaf_blocks(root) -> list:
@@ -230,37 +198,6 @@ def _strip_leading_title(text: str, title: str) -> str:
     return text
 
 
-def _find_cover(book: ebepub.EpubBook) -> tuple[bytes | None, str | None]:
-    """The cover image, found the way readers find it.
-
-    In order: an EPUB 3 ``cover-image`` item (which ebooklib types as a cover,
-    not an image, so searching images alone misses it), the EPUB 2
-    ``<meta name="cover">`` reference, then any image named like a cover.
-    """
-    for item in book.get_items_of_type(ITEM_COVER):
-        if item.get_content():
-            return item.get_content(), item.media_type
-
-    try:
-        metas = book.get_metadata("OPF", "meta")
-    except (KeyError, AttributeError):
-        metas = []
-    for _value, attrs in metas:
-        attrs = attrs or {}
-        if attrs.get("name") != "cover":
-            continue
-        item = book.get_item_with_id(attrs.get("content", ""))
-        if item is not None and (item.media_type or "").startswith("image/"):
-            return item.get_content(), item.media_type
-
-    for item in book.get_items_of_type(ITEM_IMAGE):
-        name = (item.get_name() or "").lower()
-        item_id = (item.get_id() or "").lower()
-        if "cover" in name or "cover" in item_id:
-            return item.get_content(), item.media_type
-    return None, None
-
-
 def _repair_metadata(title: str, author: str) -> tuple[str, str]:
     """Recover title/author when dc:title holds 'Title by Author'.
 
@@ -284,47 +221,31 @@ def _is_front_matter(title: str) -> bool:
 
 def parse_epub(path: str | Path) -> Book:
     """Read an epub into narratable chapters. Raises EpubError if unreadable."""
-    try:
-        eb = ebepub.read_epub(str(path), options={"ignore_ncx": False})
-    except Exception as e:  # ebooklib raises a zoo of types for bad input
-        raise EpubError(f"Not a readable epub: {e}") from e
+    with EpubFile(path) as epub:
+        return _parse(epub, Path(path))
 
-    def meta(name: str, default: str = "") -> str:
-        try:
-            values = eb.get_metadata("DC", name)
-            return (values[0][0] or default).strip() if values else default
-        except (KeyError, IndexError, AttributeError):
-            return default
 
-    docs = {item.get_name() for item in eb.get_items_of_type(ITEM_DOCUMENT)}
-    resolve = _href_resolver(eb, docs)
-
-    # Fragments per document, in TOC order, plus a plain title for whole-file entries.
-    frags_by_href: dict[str, list[tuple[str, str]]] = {}
-    title_by_href: dict[str, str] = {}
-    for href, frag, title in _flatten_toc(eb.toc):
-        name = resolve(href)
-        if name is None:
-            continue
-        if frag:
-            frags_by_href.setdefault(name, []).append((frag, title))
-        else:
-            title_by_href.setdefault(name, title)
+def _parse(epub: EpubFile, path: Path) -> Book:
+    documents = {item.path for item in epub.spine if item.is_document}
+    frags_by_doc, title_by_doc = _toc_index(epub.toc(), documents)
 
     chapters: list[Chapter] = []
-    for spine_id, _linear in eb.spine:
-        item = eb.get_item_with_id(spine_id)
-        if item is None or item.get_name() not in docs:
+    for item in epub.spine:
+        if not item.is_document:
             continue
-        href = item.get_name()
-        soup = _clean_soup(item.get_content())
+        doc = item.path
+        try:
+            soup = _clean_soup(epub.read(doc))
+        except KeyError:
+            logger.warning("%s lists %s, but the file is missing; skipping it", path.name, doc)
+            continue
 
-        fragments = frags_by_href.get(href, [])
+        fragments = frags_by_doc.get(doc, [])
         if len(fragments) >= 2:
             split = _split_at_fragments(soup, fragments)
             if split is not None:
                 preamble, sub_chapters = split
-                pre_title = title_by_href.get(href, "Introduction")
+                pre_title = title_by_doc.get(doc, "Introduction")
                 pre_text = "\n\n".join(preamble)
                 if len(pre_text) >= MIN_CHAPTER_CHARS and not _is_front_matter(pre_title):
                     chapters.append(Chapter(title=pre_title, text=pre_text))
@@ -348,21 +269,21 @@ def parse_epub(path: str | Path) -> Book:
         h = soup.find(["h1", "h2", "h3"])
         if h:
             heading = _text_of(h)
-        title = title_by_href.get(href) or heading
+        title = title_by_doc.get(doc) or heading
         if _is_front_matter(title):
             continue
         chapters.append(Chapter(title=title or f"Chapter {len(chapters) + 1}", text=text))
 
-    title, author = _repair_metadata(meta("title", Path(path).stem), meta("creator", "Unknown"))
+    title, author = _repair_metadata(epub.meta("title", path.stem), epub.meta("creator", "Unknown"))
     for ch in chapters:
         ch.text = _strip_leading_title(ch.text, ch.title)
     chapters = [c for c in chapters if len(c.text) >= MIN_CHAPTER_CHARS]
 
-    cover, cover_mt = _find_cover(eb)
+    cover, cover_mt = epub.cover()
     return Book(
-        title=title or Path(path).stem,
+        title=title or path.stem,
         author=author or "Unknown",
-        language=meta("language", "en"),
+        language=epub.meta("language", "en"),
         chapters=chapters,
         cover=cover,
         cover_media_type=cover_mt,

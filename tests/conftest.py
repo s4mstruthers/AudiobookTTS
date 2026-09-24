@@ -23,6 +23,7 @@ from audiobooktts import engines as engines_mod  # noqa: E402
 from audiobooktts.engines.base import CloningEngine  # noqa: E402
 from helpers import build_epub  # noqa: E402
 
+
 class FakeEngine(CloningEngine):
     """Deterministic stand-in for Chatterbox: a tone whose length tracks the words."""
 

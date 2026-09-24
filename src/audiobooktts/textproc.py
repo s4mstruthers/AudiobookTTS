@@ -133,7 +133,7 @@ def clean_text(text: str, respell: bool = True) -> str:
     text = normalize_caps(text)
     # Numerals before names: Chatterbox is text-only and mangles compact forms,
     # rendering "2nd July" as "tussen july".
-    from audiobooktts.numbers import expand as expand_numbers
+    from audiobooktts.numerals import expand as expand_numbers
 
     text = expand_numbers(text)
     # Respell names the engines mispronounce. Applied here so the preview and

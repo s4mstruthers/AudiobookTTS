@@ -18,7 +18,7 @@ import soundfile as sf
 from audiobooktts.config import Config
 from audiobooktts.engines import get_engine
 from audiobooktts.epub import Book, parse_epub
-from audiobooktts.packaging import package_m4b
+from audiobooktts.packager import package_m4b
 from audiobooktts.store import ChapterState, JobStore, Manifest, file_sha256
 from audiobooktts.textproc import (
     CLAUSE,

@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "audiobooktts"
+version = "0.1.0"
+description = "Convert EPUBs to chaptered m4b audiobooks with open-source TTS models on Apple Silicon."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Sam Struthers" }]
+dependencies = [
+    # TTS models (MLX runs on Apple Silicon only)
+    "mlx",
+    "mlx-audio",
+    # Audio and numerics
+    "numpy",
+    "soundfile",
+    # EPUB parsing and text normalisation
+    "ebooklib",
+    "beautifulsoup4",
+    "num2words",
+    # Command line and web UI
+    "rich",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",  # needed by FastAPI for file uploads
+]
+
+[project.scripts]
+abtts = "audiobooktts.cli:main"
+
+[project.urls]
+Repository = "https://github.com/s4mstruthers/AudiobookTTS"
+
+# The repository root is the package itself, so map the package name onto it
+# rather than expecting an audiobooktts/ subfolder.
+[tool.setuptools]
+package-dir = { "audiobooktts" = "." }
+packages = ["audiobooktts", "audiobooktts.engines"]
+
+[tool.setuptools.package-data]
+audiobooktts = ["static/*"]

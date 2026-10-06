@@ -58,35 +58,27 @@ All model calls run on one dedicated thread. MLX GPU streams belong to the threa
 - macOS on Apple Silicon
 - Python 3.10 or newer (developed on 3.13)
 - [ffmpeg](https://ffmpeg.org/), including `ffprobe`: `brew install ffmpeg`
-- Python packages:
-
-```bash
-pip install mlx mlx-audio numpy soundfile ebooklib beautifulsoup4 num2words rich fastapi uvicorn python-multipart
-```
 
 The model weights download from Hugging Face the first time you use an engine.
 
 ## Installation
 
-The repository root *is* the Python package. Clone it into a folder named `audiobooktts` in lower case, and run commands from the folder that contains it:
-
 ```bash
-git clone https://github.com/s4mstruthers/AudiobookTTS.git audiobooktts
-python -m audiobooktts --help
+git clone https://github.com/s4mstruthers/AudiobookTTS.git
+cd AudiobookTTS
+python3 -m venv .venv && source .venv/bin/activate
+pip install -e .
+abtts --help
 ```
 
-Optionally, add a shell alias for the short command name used below:
-
-```bash
-alias abtts="python -m audiobooktts"   # run from the parent folder
-```
+`pip install -e .` installs the Python dependencies and adds the `abtts` command. The `-e` (editable) flag means changes you make to the code take effect without reinstalling; drop it for a normal install.
 
 ## Usage
 
 ### Web UI
 
 ```bash
-python -m audiobooktts serve          # http://127.0.0.1:8765
+abtts serve                           # http://127.0.0.1:8765
 ```
 
 ### Command line
@@ -150,3 +142,7 @@ The same folder also holds:
 - **Use voice recordings responsibly.** Only clone voices you have the right to use. Public-domain LibriVox recordings are a good source.
 - **Speed:** rendering a full novel takes hours, depending on the engine and your machine.
 - **Personal use:** convert only books you are entitled to use.
+
+## License
+
+[MIT](LICENSE) © 2026 Sam Struthers
